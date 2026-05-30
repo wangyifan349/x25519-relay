@@ -1170,7 +1170,7 @@ class ChatClient:
     async def input_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                command_line = await asyncio.to_thread(input)
+                command_line = await asyncio.to_thread(input, ">>> ")
             except EOFError:
                 self.stop_event.set()
                 return
@@ -1348,7 +1348,7 @@ class ChatClient:
         # Avoid showing this same self-copy again if an immediate sync returns it
         # during the current process lifetime.
         self.remember_message_id(str(self_copy_envelope["id"]))
-        print(f">>> {message_text}")
+        #print(f">>> {message_text}")
 
     def start_file_send_task(self, peer_public_id: str, file_path: Path) -> None:
         task = asyncio.create_task(self.send_file(peer_public_id, file_path))
