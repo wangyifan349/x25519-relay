@@ -1,18 +1,76 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-x25519-relay PyQt6 single-file GUI client.
-############################################################
-I’m debugging it; this hasn’t been safely implemented successfully yet.
-############################################################
-Dependencies:
-    pip install -U PyQt6 cryptography
-Run:
-    python x25519_relay_gui_single.py
+x25519 Relay GUI Client
+=======================
 
-This file intentionally keeps the original x25519-relay wire protocol:
-4-byte big-endian length prefix + UTF-8 JSON frame; X25519/HKDF/ChaCha20-Poly1305 envelopes;
-file_start + file_chunk flow; send + send_self_copy + sync_all/sync_conversation.
+This is a single-file PyQt6 desktop client for the x25519-relay encrypted chat
+prototype. It keeps the same wire protocol as the working command-line client
+and relay server:
+
+    4-byte big-endian length prefix || compact UTF-8 JSON frame
+
+Application messages are end-to-end encrypted before they are sent to the relay.
+The relay stores and forwards opaque encrypted envelopes only. The server can see
+routing metadata such as sender public id, recipient public id, timestamps, frame
+sizes, and encrypted file-chunk counts, but it cannot read chat text, file names,
+file hashes, file keys, or file bytes.
+
+Major responsibilities in this file:
+
+    1. Identity management
+       - Load, create, import, export, and display X25519 identities.
+       - The identity private key stays local and is never sent to the server.
+
+    2. Wire protocol compatibility
+       - Send hello, send, send_self_copy, sync_conversation, sync_all, and ping
+         frames using the same protocol version and frame format as client.py.
+       - Receive ack, message, sync_begin, sync_end, error, and pong frames.
+
+    3. End-to-end encryption
+       - Use X25519 static and ephemeral key agreement, HKDF-SHA256, and
+         ChaCha20-Poly1305 for chat and file-start envelopes.
+       - Use per-file symmetric keys for encrypted file chunks.
+
+    4. Local persistence
+       - Store identities, contacts, conversations, message records, attachment
+         indexes, and sync checkpoints in a local SQLite database.
+       - Treat SQLite as the source of truth for local history. Runtime caches
+         are only optimization helpers and must not override database state.
+
+    5. Graphical user interface
+       - Provide a contact list, message view, composer, file sending, manual
+         sync, contact details, contact deletion, key copying, and chat-history
+         export.
+
+    6. Chat-history export
+       - Export locally stored chat history to a clear UTF-8 text file.
+       - Include message timestamps, direction, message status, errors, and file
+         metadata.
+       - Do not export attachment binary contents. File messages are represented
+         by readable metadata such as file id, file name, size, SHA-256, chunk
+         progress, and local status.
+
+Maintenance notes:
+
+    - Keep protocol constants and envelope formats synchronized with server.py
+      and the known-good command-line client.py.
+    - Do not update sync checkpoints merely because an ack or sync_end frame was
+      received. A checkpoint should advance only after a message frame has been
+      successfully processed and saved locally.
+    - When deleting local conversation history or forcing a full resync, clear
+      runtime message-id deduplication caches so that server-returned historical
+      envelopes can be processed again.
+    - Prefer descriptive English identifiers. Short names are used only for
+      conventional ignored values or very narrow local scopes.
+
+Dependencies:
+
+    pip install -U PyQt6 cryptography
+
+Run:
+
+    python GUI_client_export_clean.py
 """
 from __future__ import annotations
 
@@ -81,6 +139,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
     QStyle,
@@ -98,7 +157,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 
 
-# ===== app_paths.py =====
+# ===== Application paths =====
 
 import os
 from pathlib import Path
@@ -134,7 +193,7 @@ def default_download_dir() -> Path:
     return path
 
 
-# ===== core/crypto.py =====
+# ===== Cryptographic primitives and envelope helpers =====
 
 import base64
 import hashlib
@@ -253,17 +312,17 @@ def private_key_to_base58(private_key: x25519.X25519PrivateKey) -> str:
 
 
 def private_key_from_base58(value: str) -> x25519.X25519PrivateKey:
-    raw = base58_decode(value.strip())
-    if len(raw) != 32:
+    raw_value = base58_decode(value.strip())
+    if len(raw_value) != 32:
         raise ValueError("private key must decode to 32 bytes")
-    return x25519.X25519PrivateKey.from_private_bytes(raw)
+    return x25519.X25519PrivateKey.from_private_bytes(raw_value)
 
 
 def private_key_from_base64url(value: str) -> x25519.X25519PrivateKey:
-    raw = base64url_decode(value.strip())
-    if len(raw) != 32:
+    raw_value = base64url_decode(value.strip())
+    if len(raw_value) != 32:
         raise ValueError("private key must decode to 32 bytes")
-    return x25519.X25519PrivateKey.from_private_bytes(raw)
+    return x25519.X25519PrivateKey.from_private_bytes(raw_value)
 
 
 def public_key_from_id(public_id: str) -> x25519.X25519PublicKey:
@@ -935,8 +994,8 @@ class LocalDatabase:
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self.lock:
-            row = self.connection.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-        return str(row["value"]) if row else default
+            database_row = self.connection.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return str(database_row["value"]) if database_row else default
 
     def upsert_identity(
         self,
@@ -967,17 +1026,17 @@ class LocalDatabase:
 
     def list_identities(self) -> list[IdentityRecord]:
         with self.lock:
-            rows = self.connection.execute(
+            database_rows = self.connection.execute(
                 "SELECT * FROM identities ORDER BY last_used_at_ms DESC, created_at_ms DESC"
             ).fetchall()
-        return [self._identity_from_row(row) for row in rows]
+        return [self._identity_from_row(database_row) for database_row in database_rows]
 
     def get_identity(self, public_id: str) -> IdentityRecord | None:
         with self.lock:
-            row = self.connection.execute(
+            database_row = self.connection.execute(
                 "SELECT * FROM identities WHERE public_id = ?", (public_id,)
             ).fetchone()
-        return self._identity_from_row(row) if row else None
+        return self._identity_from_row(database_row) if database_row else None
 
     def mark_identity_used(self, public_id: str) -> None:
         with self.lock:
@@ -1003,15 +1062,15 @@ class LocalDatabase:
             self.connection.commit()
 
     @staticmethod
-    def _identity_from_row(row: sqlite3.Row) -> IdentityRecord:
+    def _identity_from_row(database_row: sqlite3.Row) -> IdentityRecord:
         return IdentityRecord(
-            public_id=row["public_id"],
-            public_base58=row["public_base58"],
-            private_key_b64=row["private_key_b64"],
-            fingerprint=row["fingerprint"],
-            label=row["label"],
-            created_at_ms=int(row["created_at_ms"]),
-            last_used_at_ms=row["last_used_at_ms"],
+            public_id=database_row["public_id"],
+            public_base58=database_row["public_base58"],
+            private_key_b64=database_row["private_key_b64"],
+            fingerprint=database_row["fingerprint"],
+            label=database_row["label"],
+            created_at_ms=int(database_row["created_at_ms"]),
+            last_used_at_ms=database_row["last_used_at_ms"],
         )
 
     def upsert_contact(
@@ -1076,14 +1135,14 @@ class LocalDatabase:
 
     def get_contact(self, identity_public_id: str, peer_public_id: str) -> ContactRecord | None:
         with self.lock:
-            row = self.connection.execute(
+            database_row = self.connection.execute(
                 """
                 SELECT * FROM contacts
                 WHERE identity_public_id = ? AND peer_public_id = ?
                 """,
                 (identity_public_id, peer_public_id),
             ).fetchone()
-        return self._contact_from_row(row) if row else None
+        return self._contact_from_row(database_row) if database_row else None
 
     def update_contact(
         self,
@@ -1140,7 +1199,7 @@ class LocalDatabase:
 
     def list_contacts(self, identity_public_id: str) -> list[ContactRecord]:
         with self.lock:
-            rows = self.connection.execute(
+            database_rows = self.connection.execute(
                 """
                 SELECT * FROM contacts
                 WHERE identity_public_id = ? AND blocked = 0
@@ -1148,18 +1207,18 @@ class LocalDatabase:
                 """,
                 (identity_public_id,),
             ).fetchall()
-        return [self._contact_from_row(row) for row in rows]
+        return [self._contact_from_row(database_row) for database_row in database_rows]
 
     @staticmethod
-    def _contact_from_row(row: sqlite3.Row) -> ContactRecord:
+    def _contact_from_row(database_row: sqlite3.Row) -> ContactRecord:
         return ContactRecord(
-            peer_public_id=row["peer_public_id"],
-            peer_base58=row["peer_base58"],
-            fingerprint=row["fingerprint"],
-            alias=row["alias"],
-            verified=bool(row["verified"]),
-            pinned=bool(row["pinned"]),
-            blocked=bool(row["blocked"]),
+            peer_public_id=database_row["peer_public_id"],
+            peer_base58=database_row["peer_base58"],
+            fingerprint=database_row["fingerprint"],
+            alias=database_row["alias"],
+            verified=bool(database_row["verified"]),
+            pinned=bool(database_row["pinned"]),
+            blocked=bool(database_row["blocked"]),
         )
 
     def ensure_conversation(self, identity_public_id: str, peer_public_id: str) -> None:
@@ -1173,7 +1232,7 @@ class LocalDatabase:
 
     def list_conversations(self, identity_public_id: str) -> list[ConversationRecord]:
         with self.lock:
-            rows = self.connection.execute(
+            database_rows = self.connection.execute(
                 """
                 SELECT
                     c.peer_public_id,
@@ -1196,17 +1255,17 @@ class LocalDatabase:
             ).fetchall()
         return [
             ConversationRecord(
-                peer_public_id=row["peer_public_id"],
-                display_name=row["display_name"],
-                peer_base58=row["peer_base58"],
-                fingerprint=row["fingerprint"],
-                last_message_preview=row["last_message_preview"],
-                last_message_at_ms=row["last_message_at_ms"],
-                unread_count=int(row["unread_count"]),
-                pinned=bool(row["pinned"]),
-                verified=bool(row["verified"]),
+                peer_public_id=database_row["peer_public_id"],
+                display_name=database_row["display_name"],
+                peer_base58=database_row["peer_base58"],
+                fingerprint=database_row["fingerprint"],
+                last_message_preview=database_row["last_message_preview"],
+                last_message_at_ms=database_row["last_message_at_ms"],
+                unread_count=int(database_row["unread_count"]),
+                pinned=bool(database_row["pinned"]),
+                verified=bool(database_row["verified"]),
             )
-            for row in rows
+            for database_row in database_rows
         ]
 
     def mark_conversation_read(self, identity_public_id: str, peer_public_id: str) -> None:
@@ -1228,14 +1287,14 @@ class LocalDatabase:
 
     def get_sync_state(self, identity_public_id: str, scope: str, peer_public_id: str) -> int:
         with self.lock:
-            row = self.connection.execute(
+            database_row = self.connection.execute(
                 """
                 SELECT last_server_id FROM sync_state
                 WHERE identity_public_id = ? AND scope = ? AND peer_public_id = ?
                 """,
                 (identity_public_id, scope, peer_public_id),
             ).fetchone()
-        return int(row["last_server_id"]) if row else 0
+        return int(database_row["last_server_id"]) if database_row else 0
 
     def update_sync_state(
         self, identity_public_id: str, scope: str, peer_public_id: str, server_id: int
@@ -1324,6 +1383,25 @@ class LocalDatabase:
             self.connection.commit()
         return inserted
 
+    def has_message(self, identity_public_id: str, envelope_id: str) -> bool:
+        """Return whether an envelope has already been saved in local SQLite.
+
+        This is deliberately separate from RelayClient.seen_message_id_set. The
+        seen set is only an in-memory duplicate guard for the current GUI
+        process, while SQLite is the source of truth for whether local history
+        still contains the message.
+        """
+        with self.lock:
+            database_row = self.connection.execute(
+                """
+                SELECT 1 FROM messages
+                WHERE identity_public_id = ? AND envelope_id = ?
+                LIMIT 1
+                """,
+                (identity_public_id, envelope_id),
+            ).fetchone()
+        return database_row is not None
+
     def update_message_status(
         self,
         *,
@@ -1348,7 +1426,7 @@ class LocalDatabase:
         self, identity_public_id: str, peer_public_id: str, *, limit: int = 500
     ) -> list[MessageRecord]:
         with self.lock:
-            rows = self.connection.execute(
+            database_rows = self.connection.execute(
                 """
                 SELECT * FROM (
                     SELECT * FROM messages
@@ -1361,17 +1439,58 @@ class LocalDatabase:
             ).fetchall()
         return [
             MessageRecord(
-                envelope_id=row["envelope_id"],
-                peer_public_id=row["peer_public_id"],
-                direction=row["direction"],
-                kind=row["kind"],
-                text=row["text"],
-                status=row["status"],
-                created_at_ms=row["created_at_ms"],
-                server_id=row["server_id"],
-                error=row["error"],
+                envelope_id=database_row["envelope_id"],
+                peer_public_id=database_row["peer_public_id"],
+                direction=database_row["direction"],
+                kind=database_row["kind"],
+                text=database_row["text"],
+                status=database_row["status"],
+                created_at_ms=database_row["created_at_ms"],
+                server_id=database_row["server_id"],
+                error=database_row["error"],
             )
-            for row in rows
+            for database_row in database_rows
+        ]
+
+    def list_messages_for_export(self, identity_public_id: str, peer_public_id: str) -> list[MessageRecord]:
+        """Return all locally saved messages for one conversation in chronological order.
+
+        Export uses COALESCE(created_at_ms, received_at_ms) as its display time so
+        imported/synced records with incomplete payload timestamps still produce a
+        stable, readable transcript.
+        """
+        with self.lock:
+            database_rows = self.connection.execute(
+                """
+                SELECT
+                    envelope_id,
+                    peer_public_id,
+                    direction,
+                    kind,
+                    text,
+                    status,
+                    COALESCE(created_at_ms, received_at_ms) AS export_time_ms,
+                    server_id,
+                    error
+                FROM messages
+                WHERE identity_public_id = ? AND peer_public_id = ?
+                ORDER BY COALESCE(created_at_ms, received_at_ms) ASC, rowid ASC
+                """,
+                (identity_public_id, peer_public_id),
+            ).fetchall()
+        return [
+            MessageRecord(
+                envelope_id=database_row["envelope_id"],
+                peer_public_id=database_row["peer_public_id"],
+                direction=database_row["direction"],
+                kind=database_row["kind"],
+                text=database_row["text"],
+                status=database_row["status"],
+                created_at_ms=database_row["export_time_ms"],
+                server_id=database_row["server_id"],
+                error=database_row["error"],
+            )
+            for database_row in database_rows
         ]
 
     def upsert_attachment(
@@ -1429,7 +1548,7 @@ class LocalDatabase:
         if not file_id:
             return None
         with self.lock:
-            row = self.connection.execute(
+            database_row = self.connection.execute(
                 """
                 SELECT * FROM attachments
                 WHERE peer_public_id = ? AND file_id = ?
@@ -1438,11 +1557,11 @@ class LocalDatabase:
                 """,
                 (peer_public_id, file_id),
             ).fetchone()
-        return self._attachment_from_row(row) if row else None
+        return self._attachment_from_row(database_row) if database_row else None
 
     def get_attachment_by_file_id(self, file_id: str) -> AttachmentRecord | None:
         with self.lock:
-            row = self.connection.execute(
+            database_row = self.connection.execute(
                 """
                 SELECT * FROM attachments
                 WHERE file_id = ?
@@ -1451,24 +1570,24 @@ class LocalDatabase:
                 """,
                 (file_id,),
             ).fetchone()
-        return self._attachment_from_row(row) if row else None
+        return self._attachment_from_row(database_row) if database_row else None
 
     @staticmethod
-    def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
+    def _attachment_from_row(database_row: sqlite3.Row) -> AttachmentRecord:
         return AttachmentRecord(
-            identity_public_id=row["identity_public_id"],
-            file_id=row["file_id"],
-            peer_public_id=row["peer_public_id"],
-            direction=row["direction"],
-            filename=row["filename"],
-            size=int(row["size"]),
-            sha256=row["sha256"],
-            local_path=row["local_path"],
-            total_chunks=int(row["total_chunks"]),
-            completed_chunks=int(row["completed_chunks"]),
-            bytes_done=int(row["bytes_done"]),
-            status=row["status"],
-            created_at_ms=int(row["created_at_ms"]),
+            identity_public_id=database_row["identity_public_id"],
+            file_id=database_row["file_id"],
+            peer_public_id=database_row["peer_public_id"],
+            direction=database_row["direction"],
+            filename=database_row["filename"],
+            size=int(database_row["size"]),
+            sha256=database_row["sha256"],
+            local_path=database_row["local_path"],
+            total_chunks=int(database_row["total_chunks"]),
+            completed_chunks=int(database_row["completed_chunks"]),
+            bytes_done=int(database_row["bytes_done"]),
+            status=database_row["status"],
+            created_at_ms=int(database_row["created_at_ms"]),
         )
 
     def bulk_add_contacts(self, identity_public_id: str, contacts: Iterable[ContactRecord]) -> None:
@@ -1547,15 +1666,15 @@ class ConversationListModel(QAbstractListModel):
             return QSize(280, 72)
         return None
 
-    def record_at(self, row: int) -> ConversationRecord | None:
-        if 0 <= row < len(self.items):
-            return self.items[row]
+    def record_at(self, database_row: int) -> ConversationRecord | None:
+        if 0 <= database_row < len(self.items):
+            return self.items[database_row]
         return None
 
     def index_for_peer(self, peer_public_id: str) -> QModelIndex:
-        for row, record in enumerate(self.items):
+        for database_row, record in enumerate(self.items):
             if record.peer_public_id == peer_public_id:
-                return self.index(row, 0)
+                return self.index(database_row, 0)
         return QModelIndex()
 
 
@@ -1595,9 +1714,9 @@ class MessageListModel(QAbstractListModel):
             return QSize(100, 86)
         return None
 
-    def message_at(self, row: int) -> MessageRecord | None:
-        if 0 <= row < len(self.items):
-            return self.items[row]
+    def message_at(self, database_row: int) -> MessageRecord | None:
+        if 0 <= database_row < len(self.items):
+            return self.items[database_row]
         return None
 
 
@@ -1616,21 +1735,21 @@ from PyQt6.QtWidgets import QApplication, QStyle, QStyledItemDelegate, QStyleOpt
 FILE_TOKEN_RE = re.compile(r"^\[file:([0-9a-fA-F\-]+)\]\s*(.*)$")
 
 
-def short_time(ms: int | None) -> str:
-    if not ms:
+def short_time(timestamp_ms: int | None) -> str:
+    if not timestamp_ms:
         return ""
-    dt = datetime.fromtimestamp(ms / 1000)
-    return dt.strftime("%H:%M")
+    date_time = datetime.fromtimestamp(timestamp_ms / 1000)
+    return date_time.strftime("%H:%M")
 
 
-def short_date_time(ms: int | None) -> str:
-    if not ms:
+def short_date_time(timestamp_ms: int | None) -> str:
+    if not timestamp_ms:
         return ""
-    dt = datetime.fromtimestamp(ms / 1000)
+    date_time = datetime.fromtimestamp(timestamp_ms / 1000)
     now = datetime.now()
-    if dt.date() == now.date():
-        return dt.strftime("%H:%M")
-    return dt.strftime("%m-%d %H:%M")
+    if date_time.date() == now.date():
+        return date_time.strftime("%H:%M")
+    return date_time.strftime("%m-%d %H:%M")
 
 
 def elide(text: str, metrics: QFontMetrics, width: int) -> str:
@@ -1646,6 +1765,35 @@ def parse_file_token(text: str) -> tuple[str | None, str]:
     return None, text
 
 
+def full_date_time(timestamp_ms: int | None) -> str:
+    if not timestamp_ms:
+        return "未知时间"
+    return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def human_file_size(size: int | None) -> str:
+    try:
+        value = int(size or 0)
+    except Exception:
+        value = 0
+    if value < 1024:
+        return f"{value} B"
+    units = ["KB", "MB", "GB", "TB"]
+    amount = float(value)
+    for unit in units:
+        amount /= 1024.0
+        if amount < 1024.0 or unit == units[-1]:
+            return f"{amount:.2f} {unit}"
+    return f"{value} B"
+
+
+def indent_multiline_text(text: str, prefix: str = "    ") -> str:
+    if not text:
+        return ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join((prefix + line) if line else prefix.rstrip() for line in normalized.split("\n"))
+
+
 class ConversationDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # noqa: ANN001
         record = index.data(ConversationRecordRole)
@@ -1659,14 +1807,14 @@ class ConversationDelegate(QStyledItemDelegate):
         hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
 
         if selected:
-            bg = QColor("#D8CCB9")
+            background_color = QColor("#D8CCB9")
         elif hover:
-            bg = QColor("#E8DECf")
+            background_color = QColor("#E8DECf")
         else:
-            bg = QColor("#EFE8DC")
+            background_color = QColor("#EFE8DC")
         path = QPainterPath()
         path.addRoundedRect(rect.x(), rect.y(), rect.width(), rect.height(), 16, 16)
-        painter.fillPath(path, bg)
+        painter.fillPath(path, background_color)
 
         avatar_rect = QRect(rect.x() + 12, rect.y() + 13, 40, 40)
         avatar_color = QColor("#7C6B4D") if not record.pinned else QColor("#8A5F3E")
@@ -1731,6 +1879,10 @@ class MessageBubbleDelegate(QStyledItemDelegate):
     def __init__(self, database: LocalDatabase, parent=None):
         super().__init__(parent)
         self.database = database
+        self.chat_font_size = 18
+
+    def set_chat_font_size(self, point_size: int) -> None:
+        self.chat_font_size = max(18, min(25, int(point_size)))
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # noqa: ANN001
         message: MessageRecord | None = index.data(MessageRecordRole)
@@ -1741,15 +1893,14 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = option.rect.adjusted(14, 5, -14, -5)
         outgoing = message.direction == "outgoing"
-        max_bubble_width = int(rect.width() * 0.68)
+        max_bubble_width = int(rect.width() * self._bubble_width_ratio())
         min_bubble_width = 190 if message.kind == "file_start" else 80
 
         font = QFont(option.font)
-        font.setPointSize(10)
+        font.setPointSize(self.chat_font_size)
         metrics = QFontMetrics(font)
         meta_font = QFont(option.font)
         meta_font.setPointSize(8)
-        meta_metrics = QFontMetrics(meta_font)
 
         display_text = self._display_text(message)
         wrapped = self._wrap_text(display_text, metrics, max_bubble_width - 28)
@@ -1774,17 +1925,17 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         else:
             painter.setFont(font)
             painter.setPen(QColor("#2C2821"))
-            y = bubble.y() + 14
+            text_y = bubble.y() + 14
             for line in wrapped:
-                painter.drawText(QRect(bubble.x() + 14, y, bubble.width() - 28, metrics.lineSpacing()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, line)
-                y += metrics.lineSpacing()
+                painter.drawText(QRect(bubble.x() + 14, text_y, bubble.width() - 28, metrics.lineSpacing()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, line)
+                text_y += metrics.lineSpacing()
 
         meta = ""
-        t = short_time(message.created_at_ms)
+        message_time_text = short_time(message.created_at_ms)
         if outgoing:
-            meta = f"{t} · {self._status_label(message.status)}" if t else self._status_label(message.status)
-        elif t:
-            meta = t
+            meta = f"{message_time_text} · {self._status_label(message.status)}" if message_time_text else self._status_label(message.status)
+        elif message_time_text:
+            meta = message_time_text
         if message.error:
             meta = (meta + " · " if meta else "") + "错误"
         painter.setFont(meta_font)
@@ -1817,19 +1968,24 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         painter.setPen(QColor("#2C2821"))
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elide(filename, QFontMetrics(font), title_rect.width()))
 
-        sub = self._file_subtitle(status, done, total)
+        subtitle_text = self._file_subtitle(status, done, total)
         painter.setFont(meta_font)
         painter.setPen(QColor("#796F63"))
-        painter.drawText(QRect(icon_rect.right() + 12, bubble.y() + 36, bubble.width() - 78, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
+        painter.drawText(QRect(icon_rect.right() + 12, bubble.y() + 36, bubble.width() - 78, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, subtitle_text)
 
         if total > 0 and status not in {"saved", "sha256_failed", "size_failed"}:
-            bar = QRect(icon_rect.right() + 12, bubble.y() + 58, bubble.width() - 92, 5)
+            progress_bar_rect = QRect(icon_rect.right() + 12, bubble.y() + 58, bubble.width() - 92, 5)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor("#D1C3B0"))
-            painter.drawRoundedRect(bar, 2, 2)
-            done_w = int(bar.width() * max(0, min(done, total)) / total)
+            painter.drawRoundedRect(progress_bar_rect, 2, 2)
+            completed_progress_width = int(progress_bar_rect.width() * max(0, min(done, total)) / total)
             painter.setBrush(QColor("#8A7353"))
-            painter.drawRoundedRect(QRect(bar.x(), bar.y(), done_w, bar.height()), 2, 2)
+            painter.drawRoundedRect(QRect(progress_bar_rect.x(), progress_bar_rect.y(), completed_progress_width, progress_bar_rect.height()), 2, 2)
+
+    def _bubble_width_ratio(self) -> float:
+        """Widen bubbles as chat font grows, so larger text wraps less vertically."""
+        growth = (self.chat_font_size - 18) / 7
+        return min(0.86, 0.68 + max(0.0, growth) * 0.18)
 
     @staticmethod
     def _file_subtitle(status: str, done: int, total: int) -> str:
@@ -1876,16 +2032,16 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         if message is None:
             return QSize(100, 60)
         font = QApplication.font()
-        font.setPointSize(10)
+        font.setPointSize(self.chat_font_size)
         metrics = QFontMetrics(font)
         width = max(360, option.widget.width() if option.widget else 760)
-        max_bubble_width = int((width - 28) * 0.68)
+        max_bubble_width = int((width - 28) * self._bubble_width_ratio())
         text = self._display_text(message)
         wrapped = self._wrap_text(text, metrics, max_bubble_width - 28)
         height = metrics.lineSpacing() * max(1, len(wrapped)) + 54
         if message.kind == "file_start":
             height = max(96, height)
-        return QSize(width, height + 10)
+        return QSize(width, height + 6)
 
 
 def _human_size(size: int) -> str:
@@ -1898,7 +2054,7 @@ def _human_size(size: int) -> str:
         value /= 1024
 
 
-# ===== gui/dialogs.py =====
+# ===== Dialogs =====
 
 from dataclasses import dataclass
 
@@ -1965,12 +2121,12 @@ class AddContactDialog(QDialog):
         self._update_preview()
 
     def _update_preview(self) -> None:
-        raw = self.key_edit.toPlainText().strip()
-        if not raw:
+        raw_value = self.key_edit.toPlainText().strip()
+        if not raw_value:
             self._public_id = None
             self.preview_label.setText("尚未解析")
             return
-        public_id = normalize_public_id(raw)
+        public_id = normalize_public_id(raw_value)
         if not is_valid_x25519_public_id(public_id):
             self._public_id = None
             self.preview_label.setText("格式无效：请输入 32-byte X25519 public key 的 Base58 或 base64url 形式。")
@@ -2099,6 +2255,33 @@ QTextEdit {
 QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {
     border: 1px solid #9F7E53;
     background: #FFFFFF;
+}
+QComboBox#IdentityCombo {
+    min-height: 22px;
+    padding-right: 30px;
+    font-weight: 600;
+}
+QComboBox#IdentityCombo::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 28px;
+    border-left: 1px solid #D5C8B7;
+    border-top-right-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+QComboBox#IdentityCombo QAbstractItemView {
+    background: #FFFDF8;
+    color: #292520;
+    border: 1px solid #CDBDA8;
+    border-radius: 10px;
+    padding: 6px;
+    selection-background-color: #D9C7A4;
+    selection-color: #221F1A;
+    outline: 0;
+}
+QComboBox#IdentityCombo QAbstractItemView::item {
+    min-height: 30px;
+    padding: 6px 10px;
 }
 QPushButton {
     background: #E6DDCF;
@@ -2372,6 +2555,18 @@ class RelayClient(QObject):
             self.messages_changed.emit(peer_public_id)
             self.conversations_changed.emit()
 
+    def clear_message_dedup_cache(self) -> None:
+        """Clear only runtime duplicate guards, not persistent local data.
+
+        The relay can legitimately resend the same encrypted envelopes during a
+        from-beginning sync. If the user deleted local history in this GUI
+        process, old envelope ids may still be remembered in RAM and would be
+        skipped until restart. Clearing this cache lets SQLite rebuild history;
+        SQLite primary keys still prevent duplicate local rows.
+        """
+        self.seen_message_ids.clear()
+        self.seen_message_id_set.clear()
+
     async def connect_to_server(
         self,
         *,
@@ -2395,9 +2590,9 @@ class RelayClient(QObject):
             self._create_task(self._receiver_loop(), "relay-receiver")
             self._create_task(self._auto_sync_loop(), "relay-auto-sync")
             self.connection_state_changed.emit("已连接")
-        except Exception as exc:
+        except Exception as exception:
             self.connection_state_changed.emit("连接失败")
-            self.error_happened.emit(str(exc))
+            self.error_happened.emit(str(exception))
             raise
 
     async def disconnect(self) -> None:
@@ -2440,8 +2635,8 @@ class RelayClient(QObject):
                 await write_tcp_frame(self.writer, frame)
         except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, OSError):
             return
-        except Exception as exc:
-            self.error_happened.emit(f"发送循环错误: {exc}")
+        except Exception as exception:
+            self.error_happened.emit(f"发送循环错误: {exception}")
 
     async def _receiver_loop(self) -> None:
         if self.reader is None or self.stop_event is None:
@@ -2454,8 +2649,8 @@ class RelayClient(QObject):
             self.connection_state_changed.emit("已断开")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            self.error_happened.emit(f"接收循环错误: {exc}")
+        except Exception as exception:
+            self.error_happened.emit(f"接收循环错误: {exception}")
             self.connection_state_changed.emit("已断开")
 
     async def handle_server_frame(self, frame: dict[str, Any]) -> None:
@@ -2478,8 +2673,8 @@ class RelayClient(QObject):
                 self.error_happened.emit(str(frame.get("error", "unknown server error")))
             elif frame_type == "pong":
                 self.sync_state_changed.emit("pong")
-        except Exception as exc:
-            self.error_happened.emit(f"处理服务器帧失败: {exc}")
+        except Exception as exception:
+            self.error_happened.emit(f"处理服务器帧失败: {exception}")
 
     def handle_ack(self, frame: dict[str, Any]) -> None:
         client_message_id = frame.get("client_message_id")
@@ -2539,8 +2734,8 @@ class RelayClient(QObject):
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                self.error_happened.emit(f"自动同步失败: {exc}")
+            except Exception as exception:
+                self.error_happened.emit(f"自动同步失败: {exception}")
 
     async def request_conversation_sync(
         self, peer_public_id: str, after_server_id: int = 0, *, silent: bool = False
@@ -2795,8 +2990,8 @@ class RelayClient(QObject):
             self.conversations_changed.emit()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            self.error_happened.emit(f"文件发送失败: {exc}")
+        except Exception as exception:
+            self.error_happened.emit(f"文件发送失败: {exception}")
             if file_id:
                 self.file_progress_changed.emit(
                     self._file_progress_dict(file_id, Path(file_path).name, 0, 0, "failed")
@@ -2812,7 +3007,13 @@ class RelayClient(QObject):
         message_id = envelope.get("id")
         if not isinstance(message_id, str):
             return
-        if self.has_seen_message_id(message_id):
+        # Do not let the process-local dedup cache hide server history after
+        # local deletion/re-add. If SQLite no longer has this envelope, process
+        # it again even if the id was seen earlier in this GUI process.
+        if self.has_seen_message_id(message_id) and self.database.has_message(
+            self.local_public_id,
+            message_id,
+        ):
             return
         self.remember_message_id(message_id)
         server_id = _parse_int(frame.get("server_id"), 0)
@@ -3253,7 +3454,15 @@ class MainWindow(QMainWindow):
 
         toolbar.addWidget(QLabel("身份"))
         self.identity_combo = QComboBox()
-        self.identity_combo.setMinimumWidth(250)
+        self.identity_combo.setObjectName("IdentityCombo")
+        self.identity_combo.setMinimumWidth(360)
+        self.identity_combo.setMaximumWidth(560)
+        self.identity_combo.setMinimumContentsLength(28)
+        self.identity_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.identity_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.identity_combo.setToolTip("选择当前本地身份。列表中会显示备注名、公钥前后缀和指纹。")
+        self.identity_combo.view().setMinimumWidth(620)
+        self.identity_combo.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
         toolbar.addWidget(self.identity_combo)
 
         self.create_identity_button = QPushButton("新身份")
@@ -3355,7 +3564,8 @@ class MainWindow(QMainWindow):
 
         self.message_list = MessageListView()
         self.message_list.setModel(self.message_model)
-        self.message_list.setItemDelegate(MessageBubbleDelegate(self.database, self.message_list))
+        self.message_delegate = MessageBubbleDelegate(self.database, self.message_list)
+        self.message_list.setItemDelegate(self.message_delegate)
         self.message_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         chat_layout.addWidget(self.message_list, 1)
 
@@ -3379,6 +3589,20 @@ class MainWindow(QMainWindow):
         root.setStretchFactor(0, 1)
         root.setStretchFactor(1, 3)
         self.statusBar().showMessage("未连接")
+        self.chat_font_slider_label = QLabel("字")
+        self.chat_font_slider_label.setToolTip("聊天文字大小")
+        self.chat_font_slider = QSlider(Qt.Orientation.Horizontal)
+        self.chat_font_slider.setObjectName("ChatFontSlider")
+        self.chat_font_slider.setRange(18, 25)
+        self.chat_font_slider.setValue(18)
+        self.chat_font_slider.setFixedSize(54, 14)
+        self.chat_font_slider.setToolTip("只调整聊天文字大小；不改变消息框、边框或布局。")
+        self.chat_font_slider.setStyleSheet(
+            "QSlider#ChatFontSlider::groove:horizontal { height: 3px; border-radius: 1px; background: #D1C3B0; }"
+            "QSlider#ChatFontSlider::handle:horizontal { width: 8px; height: 8px; margin: -3px 0; border-radius: 4px; background: #8A7353; }"
+        )
+        self.statusBar().addPermanentWidget(self.chat_font_slider_label)
+        self.statusBar().addPermanentWidget(self.chat_font_slider)
 
         # Advanced connection controls are kept in the toolbar as compact fields.
         toolbar.addSeparator()
@@ -3419,6 +3643,7 @@ class MainWindow(QMainWindow):
         self.message_list.doubleClicked.connect(self.open_message_attachment)
         self.message_list.customContextMenuRequested.connect(self.show_message_context_menu)
         self.conversation_list.customContextMenuRequested.connect(self.show_conversation_context_menu)
+        self.chat_font_slider.valueChanged.connect(self.on_chat_font_size_changed)
 
         self.relay.connection_state_changed.connect(self.on_connection_state_changed)
         self.relay.sync_state_changed.connect(self.on_sync_state_changed)
@@ -3435,30 +3660,73 @@ class MainWindow(QMainWindow):
         except ValueError:
             self.port_spin.setValue(8765)
         self.proxy_edit.setText(self.database.get_setting("socks5_proxy", ""))
+        try:
+            chat_font_size = int(self.database.get_setting("chat_font_size", "18"))
+        except ValueError:
+            chat_font_size = 18
+        chat_font_size = max(18, min(25, chat_font_size))
+        self.chat_font_slider.blockSignals(True)
+        self.chat_font_slider.setValue(chat_font_size)
+        self.chat_font_slider.blockSignals(False)
+        self.message_delegate.set_chat_font_size(chat_font_size)
+
+    def on_chat_font_size_changed(self, value: int) -> None:
+        self.message_delegate.set_chat_font_size(value)
+        self.database.set_setting("chat_font_size", str(self.message_delegate.chat_font_size))
+        self.message_list.viewport().update()
 
     def _save_connection_settings(self) -> None:
         self.database.set_setting("server_host", self.host_edit.text().strip() or "127.0.0.1")
         self.database.set_setting("server_port", str(int(self.port_spin.value())))
         self.database.set_setting("socks5_proxy", self.proxy_edit.text().strip())
 
+    @staticmethod
+    def _identity_combo_text(record: IdentityRecord) -> str:
+        public_key = record.public_base58.strip()
+        if len(public_key) > 22:
+            compact_public_key = f"{public_key[:12]}…{public_key[-8:]}"
+        else:
+            compact_public_key = public_key
+        fingerprint_short = record.fingerprint[:19] if record.fingerprint else "无指纹"
+        return f"{record.label} · {compact_public_key} · {fingerprint_short}"
+
+    @staticmethod
+    def _identity_combo_tooltip(record: IdentityRecord) -> str:
+        return (
+            f"身份备注：{record.label}\n"
+            f"完整公钥：{record.public_base58}\n"
+            f"指纹：{record.fingerprint}"
+        )
+
     def reload_identities(self) -> None:
-        current = self.current_identity_public_id
+        current_public_id = self.current_identity_public_id
         self.identity_combo.blockSignals(True)
         self.identity_combo.clear()
         identities = self.database.list_identities()
-        for record in identities:
-            label = f"{record.label} · {record.public_base58[:18]}…"
-            self.identity_combo.addItem(label, record.public_id)
+        for identity_record in identities:
+            self.identity_combo.addItem(self._identity_combo_text(identity_record), identity_record.public_id)
+            item_index = self.identity_combo.count() - 1
+            self.identity_combo.setItemData(
+                item_index,
+                self._identity_combo_tooltip(identity_record),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        self.identity_combo.setEnabled(bool(identities))
         self.identity_combo.blockSignals(False)
         if identities:
-            target = current or identities[0].public_id
-            self._select_identity(target)
+            target_public_id = current_public_id or identities[0].public_id
+            self._select_identity(target_public_id)
             if self.identity_combo.currentIndex() < 0:
                 self.identity_combo.setCurrentIndex(0)
             public_id = self.identity_combo.currentData()
             if isinstance(public_id, str):
                 self.load_identity_record(public_id)
         else:
+            self.identity_combo.blockSignals(True)
+            self.identity_combo.addItem("还没有身份，请点击“新身份”或“导入”", None)
+            self.identity_combo.setCurrentIndex(0)
+            self.identity_combo.blockSignals(False)
+            self.identity_combo.setEnabled(False)
             self.current_identity_public_id = None
             self.identity_label.setText("还没有身份。点击“新身份”创建，或导入已有 identity.json / 私钥。")
             self.identity_card.setToolTip("")
@@ -3495,8 +3763,8 @@ class MainWindow(QMainWindow):
             self.load_identity_record(public_id)
 
     def create_new_identity(self) -> None:
-        label, ok = QInputDialog.getText(self, "新身份", "身份备注名:", text="我的身份")
-        if not ok:
+        label, confirmed = QInputDialog.getText(self, "新身份", "身份备注名:", text="我的身份")
+        if not confirmed:
             return
         identity = create_identity()
         self.database.upsert_identity(
@@ -3516,7 +3784,7 @@ class MainWindow(QMainWindow):
         )
 
     def import_identity(self) -> None:
-        choice, ok = QInputDialog.getItem(
+        choice, confirmed = QInputDialog.getItem(
             self,
             "导入身份",
             "导入方式:",
@@ -3524,7 +3792,7 @@ class MainWindow(QMainWindow):
             0,
             False,
         )
-        if not ok:
+        if not confirmed:
             return
         try:
             if choice == "选择 identity.json":
@@ -3533,17 +3801,17 @@ class MainWindow(QMainWindow):
                     return
                 identity = load_identity_json(Path(path))
             elif choice == "粘贴私钥 Base58":
-                value, ok = QInputDialog.getMultiLineText(self, "导入私钥", "Base58 私钥:")
-                if not ok or not value.strip():
+                value, confirmed = QInputDialog.getMultiLineText(self, "导入私钥", "Base58 私钥:")
+                if not confirmed or not value.strip():
                     return
                 identity = identity_from_private_key(private_key_from_base58(value.strip()))
             else:
-                value, ok = QInputDialog.getMultiLineText(self, "导入私钥", "base64url 私钥:")
-                if not ok or not value.strip():
+                value, confirmed = QInputDialog.getMultiLineText(self, "导入私钥", "base64url 私钥:")
+                if not confirmed or not value.strip():
                     return
                 identity = identity_from_private_key(private_key_from_base64url(value.strip()))
-            label, ok = QInputDialog.getText(self, "身份备注", "身份备注名:", text="导入身份")
-            if not ok:
+            label, confirmed = QInputDialog.getText(self, "身份备注", "身份备注名:", text="导入身份")
+            if not confirmed:
                 label = "导入身份"
             self.database.upsert_identity(
                 public_id=identity.public_id,
@@ -3554,8 +3822,8 @@ class MainWindow(QMainWindow):
             )
             self.reload_identities()
             self._select_identity(identity.public_id)
-        except Exception as exc:
-            self.show_error(f"导入失败: {exc}")
+        except Exception as exception:
+            self.show_error(f"导入失败: {exception}")
 
     def _select_identity(self, public_id: str) -> None:
         for index in range(self.identity_combo.count()):
@@ -3613,8 +3881,8 @@ class MainWindow(QMainWindow):
         try:
             save_identity_json(Path(path), identity)
             QMessageBox.information(self, "导出完成", "身份已导出。这个文件包含私钥，请妥善保存，不要发送给别人。")
-        except Exception as exc:
-            self.show_error(f"导出失败: {exc}")
+        except Exception as exception:
+            self.show_error(f"导出失败: {exception}")
 
     def current_identity_public_base58(self) -> str | None:
         if not self.current_identity_public_id:
@@ -3772,9 +4040,9 @@ class MainWindow(QMainWindow):
                 self._connect_and_sync_all(host, port, proxy_config, after_server_id, silent=True),
                 "连接或同步失败",
             )
-        except Exception as exc:
+        except Exception as exception:
             self._set_connection_button_state("failed")
-            self.show_error(f"连接失败: {exc}")
+            self.show_error(f"连接失败: {exception}")
 
     def sync_current(self) -> None:
         if not self.current_identity_public_id:
@@ -3782,8 +4050,8 @@ class MainWindow(QMainWindow):
             return
         try:
             host, port, proxy_config = self._connection_parameters()
-        except Exception as exc:
-            self.show_error(f"连接配置无效: {exc}")
+        except Exception as exception:
+            self.show_error(f"连接配置无效: {exception}")
             return
         if self.current_peer_public_id:
             peer_public_id = self.current_peer_public_id
@@ -3824,11 +4092,15 @@ class MainWindow(QMainWindow):
             return
         try:
             host, port, proxy_config = self._connection_parameters()
-        except Exception as exc:
-            self.show_error(f"连接配置无效: {exc}")
+        except Exception as exception:
+            self.show_error(f"连接配置无效: {exception}")
             return
         after_server_id = 0
-        if not from_beginning:
+        if from_beginning:
+            # A manual full sync should rebuild from the relay, not be blocked
+            # by in-memory ids remembered before local history was deleted.
+            self.relay.clear_message_dedup_cache()
+        else:
             after_server_id = self.database.get_last_conversation_server_id(
                 self.current_identity_public_id,
                 peer_public_id,
@@ -3948,8 +4220,8 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("本地文件不存在")
 
-    def show_conversation_context_menu(self, pos) -> None:  # noqa: ANN001
-        index = self.conversation_list.indexAt(pos)
+    def show_conversation_context_menu(self, position) -> None:  # noqa: ANN001
+        index = self.conversation_list.indexAt(position)
         if not index.isValid():
             return
         conversation_record = index.data(ConversationRecordRole)
@@ -3958,25 +4230,154 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         detail_action = QAction("联系人详情", self)
         sync_action = QAction("同步消息", self)
+        export_action = QAction("导出聊天记录", self)
         copy_key_action = QAction("复制对方公钥", self)
         delete_action = QAction("删除好友", self)
         menu.addAction(detail_action)
         menu.addAction(sync_action)
+        menu.addAction(export_action)
         menu.addAction(copy_key_action)
         menu.addSeparator()
         menu.addAction(delete_action)
-        chosen_action = menu.exec(self.conversation_list.viewport().mapToGlobal(pos))
+        chosen_action = menu.exec(self.conversation_list.viewport().mapToGlobal(position))
         if chosen_action == detail_action:
             self.conversation_list.setCurrentIndex(index)
             self.show_contact_details()
         elif chosen_action == sync_action:
             self.conversation_list.setCurrentIndex(index)
             self.sync_peer_conversation(conversation_record.peer_public_id, from_beginning=True)
+        elif chosen_action == export_action:
+            self.conversation_list.setCurrentIndex(index)
+            self.export_chat_history(conversation_record)
         elif chosen_action == copy_key_action:
             self.copy_text(conversation_record.peer_base58)
             self.statusBar().showMessage(f"已复制对方公钥：{conversation_record.peer_base58}")
         elif chosen_action == delete_action:
             self.delete_contact(conversation_record)
+
+    def export_chat_history(self, conversation_record: ConversationRecord) -> None:
+        if not self.current_identity_public_id:
+            self.show_error("请先选择一个身份。")
+            return
+        messages = self.database.list_messages_for_export(
+            self.current_identity_public_id,
+            conversation_record.peer_public_id,
+        )
+        if not messages:
+            QMessageBox.information(self, "导出聊天记录", "这个联系人当前没有本地聊天记录可导出。")
+            return
+
+        contact = self.database.get_contact(self.current_identity_public_id, conversation_record.peer_public_id)
+        identity = self.database.get_identity(self.current_identity_public_id)
+        display_name = conversation_record.display_name or (contact.alias if contact and contact.alias else conversation_record.peer_base58)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suggested_name = safe_filename(f"聊天记录_{display_name}_{timestamp}.txt")
+        default_path = str(Path.home() / suggested_name)
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出聊天记录",
+            default_path,
+            "Text Files (*.txt);;All Files (*)",
+        )
+        if not file_name:
+            return
+        output_path = Path(file_name)
+        if output_path.suffix.lower() != ".txt":
+            output_path = output_path.with_suffix(".txt")
+
+        try:
+            export_text = self._build_chat_export_text(
+                conversation_record=conversation_record,
+                contact=contact,
+                identity=identity,
+                messages=messages,
+            )
+            output_path.write_text(export_text, encoding="utf-8", newline="\n")
+        except Exception as exception:
+            self.show_error(f"导出聊天记录失败: {exception}")
+            return
+
+        self.statusBar().showMessage(f"已导出聊天记录：{output_path}")
+        QMessageBox.information(self, "导出聊天记录", f"已导出 {len(messages)} 条本地聊天记录：\n{output_path}")
+
+    def _build_chat_export_text(
+        self,
+        *,
+        conversation_record: ConversationRecord,
+        contact: ContactRecord | None,
+        identity: IdentityRecord | None,
+        messages: list[MessageRecord],
+    ) -> str:
+        peer_label = conversation_record.display_name or (contact.alias if contact and contact.alias else conversation_record.peer_base58)
+        peer_base58 = conversation_record.peer_base58
+        peer_fingerprint = conversation_record.fingerprint or (contact.fingerprint if contact else "")
+        identity_label = identity.label if identity else "当前身份"
+        identity_base58 = identity.public_base58 if identity else public_id_to_base58(self.current_identity_public_id or "")
+        identity_fingerprint = identity.fingerprint if identity else fingerprint_for_public_id(self.current_identity_public_id or "")
+
+        lines: list[str] = [
+            "x25519 Relay 聊天记录导出",
+            "=" * 34,
+            f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"消息数量：{len(messages)}",
+            "",
+            "本地身份",
+            f"  名称：{identity_label}",
+            f"  公钥 Base58：{identity_base58}",
+            f"  指纹：{identity_fingerprint}",
+            "",
+            "联系人",
+            f"  名称：{peer_label}",
+            f"  公钥 Base58：{peer_base58}",
+            f"  指纹：{peer_fingerprint}",
+            "",
+            "说明",
+            "  这个文件只导出本地已保存的聊天记录。",
+            "  附件二进制内容不会导出；文件消息只写入文件名、大小、SHA-256、状态等索引信息。",
+            "",
+            "聊天记录",
+            "-" * 34,
+        ]
+
+        for message in messages:
+            lines.extend(self._format_export_message(message))
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _format_export_message(self, message: MessageRecord) -> list[str]:
+        timestamp = full_date_time(message.created_at_ms)
+        speaker = "我" if message.direction == "outgoing" else "对方" if message.direction == "incoming" else message.direction
+        status_suffix = "" if message.status in {"synced", "sent", "delivered", "saved"} else f" · 状态：{message.status}"
+        if message.error:
+            status_suffix += f" · 错误：{message.error}"
+
+        if message.kind == "file_start":
+            file_id, fallback_name = parse_file_token(message.text)
+            attachment = self.database.get_attachment(message.peer_public_id, file_id) if file_id else None
+            filename = attachment.filename if attachment else fallback_name
+            file_status = attachment.status if attachment else message.status
+            result = [
+                f"[{timestamp}] {speaker} 发送文件{status_suffix}",
+                f"    文件名：{filename}",
+            ]
+            if file_id:
+                result.append(f"    文件 ID：{file_id}")
+            if attachment:
+                result.extend([
+                    f"    大小：{human_file_size(attachment.size)} ({attachment.size} bytes)",
+                    f"    SHA-256：{attachment.sha256 or '未知'}",
+                    f"    分块：{attachment.completed_chunks}/{attachment.total_chunks}",
+                    f"    文件状态：{file_status}",
+                ])
+            else:
+                result.append(f"    文件状态：{file_status}")
+            result.append("    附件内容：未导出")
+            return result
+
+        text = message.text or ""
+        if "\n" in text:
+            return [f"[{timestamp}] {speaker}{status_suffix}:", indent_multiline_text(text)]
+        return [f"[{timestamp}] {speaker}{status_suffix}: {text}"]
 
     def delete_contact(self, conversation_record: ConversationRecord) -> None:
         if not self.current_identity_public_id:
@@ -3998,6 +4399,10 @@ class MainWindow(QMainWindow):
             return
         peer_public_id = conversation_record.peer_public_id
         self.database.delete_contact_and_local_history(self.current_identity_public_id, peer_public_id)
+        # Local SQLite history is gone, but this process may still remember old
+        # envelope ids in RAM. Without clearing them, re-adding this contact and
+        # syncing history will silently skip those server-returned envelopes.
+        self.relay.clear_message_dedup_cache()
         if self.current_peer_public_id == peer_public_id:
             self.current_peer_public_id = None
             self.relay.set_selected_peer(None)
@@ -4006,8 +4411,8 @@ class MainWindow(QMainWindow):
         self.refresh_conversations()
         self.statusBar().showMessage("已删除本地好友。")
 
-    def show_message_context_menu(self, pos) -> None:  # noqa: ANN001
-        index = self.message_list.indexAt(pos)
+    def show_message_context_menu(self, position) -> None:  # noqa: ANN001
+        index = self.message_list.indexAt(position)
         if not index.isValid():
             return
         message: MessageRecord | None = index.data(MessageRecordRole)
@@ -4024,7 +4429,7 @@ class MainWindow(QMainWindow):
             folder_action = QAction("打开所在目录", self)
             folder_action.triggered.connect(lambda: self.open_attachment_folder(message))
             menu.addAction(folder_action)
-        menu.exec(self.message_list.viewport().mapToGlobal(pos))
+        menu.exec(self.message_list.viewport().mapToGlobal(position))
 
     def open_attachment_folder(self, message: MessageRecord) -> None:
         file_id, _ = parse_file_token(message.text)
@@ -4124,8 +4529,8 @@ class AsyncRunner(QObject):
                 done_future.result()
             except asyncio.CancelledError:
                 return
-            except Exception as exc:
-                self.task_failed.emit(f"{error_prefix}: {exc}")
+            except Exception as exception:
+                self.task_failed.emit(f"{error_prefix}: {exception}")
 
         future.add_done_callback(_done)
         return future
@@ -4155,9 +4560,9 @@ def default_download_dir() -> Path:
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
-    app.setApplicationName("x25519 Relay Messenger")
-    app.setOrganizationName("x25519-relay")
+    application = QApplication(sys.argv)
+    application.setApplicationName("x25519 Relay Messenger")
+    application.setOrganizationName("x25519-relay")
 
     database = LocalDatabase(default_database_path())
     relay_client = RelayClient(database, default_download_dir())
@@ -4178,10 +4583,10 @@ def main() -> None:
             pass
         runner.stop()
 
-    app.aboutToQuit.connect(shutdown)
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
-    signal.signal(signal.SIGTERM, lambda *_: app.quit())
-    sys.exit(app.exec())
+    application.aboutToQuit.connect(shutdown)
+    signal.signal(signal.SIGINT, lambda *_: application.quit())
+    signal.signal(signal.SIGTERM, lambda *_: application.quit())
+    sys.exit(application.exec())
 
 
 if __name__ == "__main__":
