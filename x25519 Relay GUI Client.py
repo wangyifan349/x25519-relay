@@ -1359,9 +1359,9 @@ class LocalDatabase:
             if inserted:
                 preview = text
                 if text.startswith("[file:"):
-                    preview = "[文件] " + text.split("]", 1)[-1].strip()
+                    preview = "[File] " + text.split("]", 1)[-1].strip()
                 elif kind == "file_start":
-                    preview = text or "[文件]"
+                    preview = text or "[File]"
                 increment_unread = 1 if direction == "incoming" and peer_public_id != selected_peer_public_id else 0
                 self.connection.execute(
                     """
@@ -1760,14 +1760,14 @@ def parse_file_token(text: str) -> tuple[str | None, str]:
     match = FILE_TOKEN_RE.match(text.strip())
     if match:
         return match.group(1), match.group(2).strip() or "file"
-    if text.startswith("[文件]"):
-        return None, text.removeprefix("[文件]").strip() or "file"
+    if text.startswith("[File]"):
+        return None, text.removeprefix("[File]").strip() or "file"
     return None, text
 
 
 def full_date_time(timestamp_ms: int | None) -> str:
     if not timestamp_ms:
-        return "未知时间"
+        return "Unknown time"
     return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -1937,7 +1937,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         elif message_time_text:
             meta = message_time_text
         if message.error:
-            meta = (meta + " · " if meta else "") + "错误"
+            meta = (meta + " · " if meta else "") + "Error"
         painter.setFont(meta_font)
         painter.setPen(QColor("#82786D"))
         meta_rect = QRect(bubble.x() + 14, bubble.bottom() - 24, bubble.width() - 28, 17)
@@ -1999,11 +1999,11 @@ class MessageBubbleDelegate(QStyledItemDelegate):
     @staticmethod
     def _status_label(status: str) -> str:
         return {
-            "queued": "排队中",
-            "sent_to_server": "已提交",
-            "sent_to_server_queue": "已入队",
-            "synced": "已同步",
-            "failed": "失败",
+            "queued": "Queued",
+            "sent_to_server": "Submitted",
+            "sent_to_server_queue": "Queued",
+            "synced": "Synced",
+            "failed": "Failed",
         }.get(status, status or "")
 
     @staticmethod
@@ -2083,33 +2083,33 @@ class ContactDialogResult:
 class AddContactDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("添加联系人")
+        self.setWindowTitle("Add Contact")
         self.setMinimumWidth(520)
         self._public_id: str | None = None
 
         layout = QVBoxLayout(self)
-        hint = QLabel("粘贴对方的 Base58 公钥/用户名，或者旧版 base64url public id。")
+        hint = QLabel("Paste the peer's Base58 public key/username, or a legacy base64url public id.")
         hint.setWordWrap(True)
         hint.setObjectName("MutedLabel")
         layout.addWidget(hint)
 
         form = QFormLayout()
         self.key_edit = QPlainTextEdit()
-        self.key_edit.setPlaceholderText("对方 public key / username")
+        self.key_edit.setPlaceholderText("Peer public key / username")
         self.key_edit.setFixedHeight(92)
         self.alias_edit = QLineEdit()
-        self.alias_edit.setPlaceholderText("例如 Alice / 工作号 / 测试节点")
-        self.verified_check = QCheckBox("我已经通过其他渠道核对 fingerprint")
-        self.pinned_check = QCheckBox("置顶这个会话")
-        self.preview_label = QLabel("尚未解析")
+        self.alias_edit.setPlaceholderText("For example: Alice / work account / test node")
+        self.verified_check = QCheckBox("I have verified the fingerprint through another channel")
+        self.pinned_check = QCheckBox("Pin this conversation")
+        self.preview_label = QLabel("Not parsed yet")
         self.preview_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.preview_label.setWordWrap(True)
         self.preview_label.setObjectName("MutedLabel")
-        form.addRow("公钥", self.key_edit)
-        form.addRow("备注", self.alias_edit)
-        form.addRow("安全", self.verified_check)
-        form.addRow("列表", self.pinned_check)
-        form.addRow("预览", self.preview_label)
+        form.addRow("Public key", self.key_edit)
+        form.addRow("Alias", self.alias_edit)
+        form.addRow("Security", self.verified_check)
+        form.addRow("List", self.pinned_check)
+        form.addRow("Preview", self.preview_label)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
@@ -2124,12 +2124,12 @@ class AddContactDialog(QDialog):
         raw_value = self.key_edit.toPlainText().strip()
         if not raw_value:
             self._public_id = None
-            self.preview_label.setText("尚未解析")
+            self.preview_label.setText("Not parsed yet")
             return
         public_id = normalize_public_id(raw_value)
         if not is_valid_x25519_public_id(public_id):
             self._public_id = None
-            self.preview_label.setText("格式无效：请输入 32-byte X25519 public key 的 Base58 或 base64url 形式。")
+            self.preview_label.setText("Invalid format: enter a Base58 or base64url encoded 32-byte X25519 public key.")
             return
         self._public_id = public_id
         self.preview_label.setText(
@@ -2151,12 +2151,12 @@ class AddContactDialog(QDialog):
 class ContactDetailsDialog(QDialog):
     def __init__(self, contact: ContactRecord | None, peer_public_id: str, peer_base58: str, fingerprint: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("联系人详情")
+        self.setWindowTitle("Contact Details")
         self.setMinimumWidth(560)
         self.peer_public_id = peer_public_id
 
         layout = QVBoxLayout(self)
-        info = QLabel(f"公钥：{peer_base58}\nFingerprint：{fingerprint}")
+        info = QLabel(f"Public key: {peer_base58}\nFingerprint：{fingerprint}")
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info.setWordWrap(True)
         info.setObjectName("MutedLabel")
@@ -2164,14 +2164,14 @@ class ContactDetailsDialog(QDialog):
 
         form = QFormLayout()
         self.alias_edit = QLineEdit(contact.alias if contact else "")
-        self.alias_edit.setPlaceholderText("本地备注，不会发送给服务器")
-        self.verified_check = QCheckBox("已通过其他渠道核对 fingerprint")
+        self.alias_edit.setPlaceholderText("Local alias; not sent to the server")
+        self.verified_check = QCheckBox("Fingerprint verified through another channel")
         self.verified_check.setChecked(bool(contact.verified) if contact else False)
-        self.pinned_check = QCheckBox("置顶这个会话")
+        self.pinned_check = QCheckBox("Pin this conversation")
         self.pinned_check.setChecked(bool(contact.pinned) if contact else False)
-        form.addRow("备注", self.alias_edit)
-        form.addRow("验证", self.verified_check)
-        form.addRow("置顶", self.pinned_check)
+        form.addRow("Alias", self.alias_edit)
+        form.addRow("Verification", self.verified_check)
+        form.addRow("Pin", self.pinned_check)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
@@ -2582,16 +2582,16 @@ class RelayClient(QObject):
         self.proxy_config = proxy_config
         self.stop_event = asyncio.Event()
         self.outbox = OutboundMultiplexer()
-        self.connection_state_changed.emit("连接中")
+        self.connection_state_changed.emit("Connecting")
         try:
             self.reader, self.writer = await open_tcp_connection(host, port, proxy_config)
             await write_tcp_frame(self.writer, {"type": "hello", "id": self.local_public_id})
             self._create_task(self._outbound_sender(), "relay-outbound")
             self._create_task(self._receiver_loop(), "relay-receiver")
             self._create_task(self._auto_sync_loop(), "relay-auto-sync")
-            self.connection_state_changed.emit("已连接")
+            self.connection_state_changed.emit("Connected")
         except Exception as exception:
-            self.connection_state_changed.emit("连接失败")
+            self.connection_state_changed.emit("Connection failed")
             self.error_happened.emit(str(exception))
             raise
 
@@ -2616,7 +2616,7 @@ class RelayClient(QObject):
         self.writer = None
         self.tasks.clear()
         self.file_tasks.clear()
-        self.connection_state_changed.emit("未连接")
+        self.connection_state_changed.emit("Disconnected")
 
     def _create_task(self, coroutine: Any, name: str) -> asyncio.Task:
         task = asyncio.create_task(coroutine, name=name)
@@ -2636,7 +2636,7 @@ class RelayClient(QObject):
         except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, OSError):
             return
         except Exception as exception:
-            self.error_happened.emit(f"发送循环错误: {exception}")
+            self.error_happened.emit(f"Send loop error: {exception}")
 
     async def _receiver_loop(self) -> None:
         if self.reader is None or self.stop_event is None:
@@ -2646,12 +2646,12 @@ class RelayClient(QObject):
                 frame = await read_tcp_frame(self.reader)
                 asyncio.create_task(self.handle_server_frame(frame))
         except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, OSError):
-            self.connection_state_changed.emit("已断开")
+            self.connection_state_changed.emit("Disconnected")
         except asyncio.CancelledError:
             raise
         except Exception as exception:
-            self.error_happened.emit(f"接收循环错误: {exception}")
-            self.connection_state_changed.emit("已断开")
+            self.error_happened.emit(f"Receive loop error: {exception}")
+            self.connection_state_changed.emit("Disconnected")
 
     async def handle_server_frame(self, frame: dict[str, Any]) -> None:
         frame_type = frame.get("type")
@@ -2666,7 +2666,7 @@ class RelayClient(QObject):
             elif frame_type == "message":
                 await self.handle_message_frame(frame)
             elif frame_type == "sync_begin":
-                self.sync_state_changed.emit("同步中")
+                self.sync_state_changed.emit("Syncing")
             elif frame_type == "sync_end":
                 await self.handle_sync_end(frame)
             elif frame_type == "error":
@@ -2674,7 +2674,7 @@ class RelayClient(QObject):
             elif frame_type == "pong":
                 self.sync_state_changed.emit("pong")
         except Exception as exception:
-            self.error_happened.emit(f"处理服务器帧失败: {exception}")
+            self.error_happened.emit(f"Failed to process server frame: {exception}")
 
     def handle_ack(self, frame: dict[str, Any]) -> None:
         client_message_id = frame.get("client_message_id")
@@ -2719,7 +2719,7 @@ class RelayClient(QObject):
                     silent=True,
                 )
         else:
-            self.sync_state_changed.emit("同步完成" if count else "已是最新")
+            self.sync_state_changed.emit("Sync complete" if count else "Already up to date")
         self.conversations_changed.emit()
 
     async def _auto_sync_loop(self) -> None:
@@ -2735,7 +2735,7 @@ class RelayClient(QObject):
             except asyncio.CancelledError:
                 raise
             except Exception as exception:
-                self.error_happened.emit(f"自动同步失败: {exception}")
+                self.error_happened.emit(f"Auto-sync failed: {exception}")
 
     async def request_conversation_sync(
         self, peer_public_id: str, after_server_id: int = 0, *, silent: bool = False
@@ -2991,7 +2991,7 @@ class RelayClient(QObject):
         except asyncio.CancelledError:
             raise
         except Exception as exception:
-            self.error_happened.emit(f"文件发送失败: {exception}")
+            self.error_happened.emit(f"File send failed: {exception}")
             if file_id:
                 self.file_progress_changed.emit(
                     self._file_progress_dict(file_id, Path(file_path).name, 0, 0, "failed")
@@ -3338,7 +3338,7 @@ class ComposerTextEdit(QTextEdit):
     def __init__(self) -> None:
         super().__init__()
         self.setAcceptDrops(True)
-        self.setPlaceholderText("输入消息，Enter 发送，Shift+Enter 换行。也可以把文件拖到这里。")
+        self.setPlaceholderText("Type a message. Press Enter to send, Shift+Enter for a new line. You can also drag files here.")
         self.setMaximumHeight(112)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
@@ -3412,7 +3412,7 @@ class IdentityCardFrame(QFrame):
 
     def contextMenuEvent(self, event):  # type: ignore[override]
         menu = QMenu(self)
-        action = menu.addAction("复制完整公钥")
+        action = menu.addAction("Copy Full Public Key")
         chosen = menu.exec(event.globalPos())
         if chosen == action:
             self.copy_requested.emit()
@@ -3443,7 +3443,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         QApplication.instance().setStyleSheet(APP_QSS)  # type: ignore[union-attr]
-        toolbar = QToolBar("连接")
+        toolbar = QToolBar("Connection")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
@@ -3452,7 +3452,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.app_title)
         toolbar.addSeparator()
 
-        toolbar.addWidget(QLabel("身份"))
+        toolbar.addWidget(QLabel("Identity"))
         self.identity_combo = QComboBox()
         self.identity_combo.setObjectName("IdentityCombo")
         self.identity_combo.setMinimumWidth(360)
@@ -3460,20 +3460,20 @@ class MainWindow(QMainWindow):
         self.identity_combo.setMinimumContentsLength(28)
         self.identity_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.identity_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.identity_combo.setToolTip("选择当前本地身份。列表中会显示备注名、公钥前后缀和指纹。")
+        self.identity_combo.setToolTip("Select the current local identity. The list shows the alias, public-key prefix/suffix, and fingerprint.")
         self.identity_combo.view().setMinimumWidth(620)
         self.identity_combo.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
         toolbar.addWidget(self.identity_combo)
 
-        self.create_identity_button = QPushButton("新身份")
+        self.create_identity_button = QPushButton("New Identity")
         toolbar.addWidget(self.create_identity_button)
-        self.import_identity_button = QPushButton("导入")
+        self.import_identity_button = QPushButton("Import")
         toolbar.addWidget(self.import_identity_button)
-        self.copy_identity_button = QPushButton("复制公钥")
+        self.copy_identity_button = QPushButton("Copy Public Key")
         toolbar.addWidget(self.copy_identity_button)
-        self.export_identity_button = QPushButton("导出身份")
+        self.export_identity_button = QPushButton("Export Identity")
         toolbar.addWidget(self.export_identity_button)
-        self.delete_identity_button = QPushButton("删除身份")
+        self.delete_identity_button = QPushButton("Delete Identity")
         self.delete_identity_button.setObjectName("DangerButton")
         toolbar.addWidget(self.delete_identity_button)
 
@@ -3481,13 +3481,13 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        self.connect_button = QPushButton("未连接")
+        self.connect_button = QPushButton("Disconnected")
         self.connect_button.setObjectName("ConnectButton")
         self.connect_button.setProperty("connectionState", "disconnected")
-        self.connect_button.setToolTip("点击连接服务器；连接成功后会自动同步全部消息。")
+        self.connect_button.setToolTip("Click to connect to the server. All messages will sync automatically after connection succeeds.")
         toolbar.addWidget(self.connect_button)
-        self.sync_button = QPushButton("同步消息")
-        self.sync_button.setToolTip("同步当前联系人；未选择联系人时同步全部消息。未连接时会先自动连接。")
+        self.sync_button = QPushButton("Sync Messages")
+        self.sync_button.setToolTip("Sync the current contact. If no contact is selected, sync all messages. If disconnected, connect automatically first.")
         toolbar.addWidget(self.sync_button)
 
         root = QSplitter(Qt.Orientation.Horizontal)
@@ -3507,23 +3507,23 @@ class MainWindow(QMainWindow):
         identity_layout = QVBoxLayout(self.identity_card)
         identity_layout.setContentsMargins(14, 12, 14, 12)
         identity_layout.setSpacing(10)
-        self.identity_label = QLabel("还没有身份")
+        self.identity_label = QLabel("No identity yet")
         self.identity_label.setWordWrap(True)
-        # 不允许直接复制显示文本，因为显示文本会故意截断；复制必须走完整 public_base58 字段。
+        # Do not copy the displayed text directly because it is intentionally truncated; copying must use the full public_base58 field.
         self.identity_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         identity_layout.addWidget(self.identity_label)
-        self.identity_card_copy_button = QPushButton("复制完整公钥")
+        self.identity_card_copy_button = QPushButton("Copy Full Public Key")
         self.identity_card_copy_button.setObjectName("SoftButton")
         identity_layout.addWidget(self.identity_card_copy_button)
         sidebar_layout.addWidget(self.identity_card)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("搜索会话、公钥")
+        self.search_edit.setPlaceholderText("Search conversations or public keys")
         sidebar_layout.addWidget(self.search_edit)
 
         top_buttons = QHBoxLayout()
-        self.add_contact_button = QPushButton("+ 添加联系人")
-        self.contact_detail_button = QPushButton("详情")
+        self.add_contact_button = QPushButton("+ Add Contact")
+        self.contact_detail_button = QPushButton("Details")
         top_buttons.addWidget(self.add_contact_button, 1)
         top_buttons.addWidget(self.contact_detail_button)
         sidebar_layout.addLayout(top_buttons)
@@ -3551,9 +3551,9 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(self.peer_header)
         header_layout.setContentsMargins(16, 12, 16, 12)
         peer_text_layout = QVBoxLayout()
-        self.peer_title = QLabel("请选择一个会话")
+        self.peer_title = QLabel("Select a conversation")
         self.peer_title.setObjectName("PeerTitle")
-        self.peer_subtitle = QLabel("启动后会先显示本地缓存；连接服务器后自动增量同步。")
+        self.peer_subtitle = QLabel("Local cache is shown at startup; after connecting to the server, incremental sync runs automatically.")
         self.peer_subtitle.setObjectName("MutedLabel")
         self.peer_subtitle.setWordWrap(True)
         self.peer_subtitle.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -3577,8 +3577,8 @@ class MainWindow(QMainWindow):
         self.input_edit = ComposerTextEdit()
         composer_layout.addWidget(self.input_edit, 1)
         action_layout = QVBoxLayout()
-        self.attach_button = QPushButton("文件")
-        self.send_button = QPushButton("发送")
+        self.attach_button = QPushButton("File")
+        self.send_button = QPushButton("Send")
         self.send_button.setObjectName("PrimaryButton")
         action_layout.addWidget(self.attach_button)
         action_layout.addWidget(self.send_button)
@@ -3588,15 +3588,15 @@ class MainWindow(QMainWindow):
         root.addWidget(chat_panel)
         root.setStretchFactor(0, 1)
         root.setStretchFactor(1, 3)
-        self.statusBar().showMessage("未连接")
-        self.chat_font_slider_label = QLabel("字")
-        self.chat_font_slider_label.setToolTip("聊天文字大小")
+        self.statusBar().showMessage("Disconnected")
+        self.chat_font_slider_label = QLabel("Text")
+        self.chat_font_slider_label.setToolTip("Chat text size")
         self.chat_font_slider = QSlider(Qt.Orientation.Horizontal)
         self.chat_font_slider.setObjectName("ChatFontSlider")
         self.chat_font_slider.setRange(18, 25)
         self.chat_font_slider.setValue(18)
         self.chat_font_slider.setFixedSize(54, 14)
-        self.chat_font_slider.setToolTip("只调整聊天文字大小；不改变消息框、边框或布局。")
+        self.chat_font_slider.setToolTip("Only adjust chat text size; message boxes, borders, and layout are unchanged.")
         self.chat_font_slider.setStyleSheet(
             "QSlider#ChatFontSlider::groove:horizontal { height: 3px; border-radius: 1px; background: #D1C3B0; }"
             "QSlider#ChatFontSlider::handle:horizontal { width: 8px; height: 8px; margin: -3px 0; border-radius: 4px; background: #8A7353; }"
@@ -3606,7 +3606,7 @@ class MainWindow(QMainWindow):
 
         # Advanced connection controls are kept in the toolbar as compact fields.
         toolbar.addSeparator()
-        toolbar.addWidget(QLabel("服务器"))
+        toolbar.addWidget(QLabel("Server"))
         self.host_edit = QLineEdit("127.0.0.1")
         self.host_edit.setMaximumWidth(145)
         toolbar.addWidget(self.host_edit)
@@ -3616,7 +3616,7 @@ class MainWindow(QMainWindow):
         self.port_spin.setMaximumWidth(92)
         toolbar.addWidget(self.port_spin)
         self.proxy_edit = QLineEdit()
-        self.proxy_edit.setPlaceholderText("SOCKS5 可选")
+        self.proxy_edit.setPlaceholderText("SOCKS5 optional")
         self.proxy_edit.setMaximumWidth(170)
         toolbar.addWidget(self.proxy_edit)
 
@@ -3687,15 +3687,15 @@ class MainWindow(QMainWindow):
             compact_public_key = f"{public_key[:12]}…{public_key[-8:]}"
         else:
             compact_public_key = public_key
-        fingerprint_short = record.fingerprint[:19] if record.fingerprint else "无指纹"
+        fingerprint_short = record.fingerprint[:19] if record.fingerprint else "No fingerprint"
         return f"{record.label} · {compact_public_key} · {fingerprint_short}"
 
     @staticmethod
     def _identity_combo_tooltip(record: IdentityRecord) -> str:
         return (
-            f"身份备注：{record.label}\n"
-            f"完整公钥：{record.public_base58}\n"
-            f"指纹：{record.fingerprint}"
+            f"Identity alias：{record.label}\n"
+            f"Full public key：{record.public_base58}\n"
+            f"Fingerprint：{record.fingerprint}"
         )
 
     def reload_identities(self) -> None:
@@ -3723,12 +3723,12 @@ class MainWindow(QMainWindow):
                 self.load_identity_record(public_id)
         else:
             self.identity_combo.blockSignals(True)
-            self.identity_combo.addItem("还没有身份，请点击“新身份”或“导入”", None)
+            self.identity_combo.addItem("No identity yet. Click “New Identity” or “Import”.", None)
             self.identity_combo.setCurrentIndex(0)
             self.identity_combo.blockSignals(False)
             self.identity_combo.setEnabled(False)
             self.current_identity_public_id = None
-            self.identity_label.setText("还没有身份。点击“新身份”创建，或导入已有 identity.json / 私钥。")
+            self.identity_label.setText("No identity yet. Click “New Identity” to create one, or import an existing identity.json/private key.")
             self.identity_card.setToolTip("")
             self.identity_card_copy_button.setEnabled(False)
             self.delete_identity_button.setEnabled(False)
@@ -3746,10 +3746,10 @@ class MainWindow(QMainWindow):
         shown_key = record.public_base58 if len(record.public_base58) <= 34 else f"{record.public_base58[:28]}…"
         self.identity_label.setText(
             f"<b>{record.label}</b><br>"
-            f"公钥：{shown_key}<br>"
-            "<span style='color:#8F4D3E;'>点击卡片或按钮复制完整公钥；私钥不要分享。</span>"
+            f"Public key: {shown_key}<br>"
+            "<span style='color:#8F4D3E;'>Click the card or button to copy the full public key. Do not share your private key.</span>"
         )
-        self.identity_card.setToolTip(f"点击复制完整公钥：{record.public_base58}")
+        self.identity_card.setToolTip(f"Click to copy the full public key：{record.public_base58}")
         self.identity_card_copy_button.setEnabled(True)
         self.delete_identity_button.setEnabled(True)
         self.conversation_model.set_identity(identity.public_id)
@@ -3763,7 +3763,7 @@ class MainWindow(QMainWindow):
             self.load_identity_record(public_id)
 
     def create_new_identity(self) -> None:
-        label, confirmed = QInputDialog.getText(self, "新身份", "身份备注名:", text="我的身份")
+        label, confirmed = QInputDialog.getText(self, "New Identity", "Identity alias:", text="My Identity")
         if not confirmed:
             return
         identity = create_identity()
@@ -3772,58 +3772,58 @@ class MainWindow(QMainWindow):
             public_base58=identity.public_base58,
             private_key_b64=identity.private_key_b64,
             fingerprint=identity.fingerprint,
-            label=label.strip() or "我的身份",
+            label=label.strip() or "My Identity",
         )
         self.reload_identities()
         self._select_identity(identity.public_id)
         self.copy_text(identity.public_base58)
         QMessageBox.information(
             self,
-            "身份已创建",
-            f"完整公钥 / 用户名已复制到剪贴板：\n{identity.public_base58}\n\n注意：私钥就是身份。你说可以明文存储，所以这个版本不加密私钥，但不要分享私钥。",
+            "Identity Created",
+            f"The full public key / username has been copied to the clipboard:\n{identity.public_base58}\n\nNote: the private key is the identity. Since you said plaintext storage is acceptable, this version does not encrypt the private key, but do not share it.",
         )
 
     def import_identity(self) -> None:
         choice, confirmed = QInputDialog.getItem(
             self,
-            "导入身份",
-            "导入方式:",
-            ["选择 identity.json", "粘贴私钥 Base58", "粘贴旧版 base64url 私钥"],
+            "Import Identity",
+            "Import method:",
+            ["Choose identity.json", "Paste Base58 Private Key", "Paste Legacy base64url Private Key"],
             0,
             False,
         )
         if not confirmed:
             return
         try:
-            if choice == "选择 identity.json":
-                path, _ = QFileDialog.getOpenFileName(self, "选择 identity.json", "", "JSON (*.json);;All files (*)")
+            if choice == "Choose identity.json":
+                path, _ = QFileDialog.getOpenFileName(self, "Choose identity.json", "", "JSON (*.json);;All files (*)")
                 if not path:
                     return
                 identity = load_identity_json(Path(path))
-            elif choice == "粘贴私钥 Base58":
-                value, confirmed = QInputDialog.getMultiLineText(self, "导入私钥", "Base58 私钥:")
+            elif choice == "Paste Base58 Private Key":
+                value, confirmed = QInputDialog.getMultiLineText(self, "Import Private Key", "Base58 private key:")
                 if not confirmed or not value.strip():
                     return
                 identity = identity_from_private_key(private_key_from_base58(value.strip()))
             else:
-                value, confirmed = QInputDialog.getMultiLineText(self, "导入私钥", "base64url 私钥:")
+                value, confirmed = QInputDialog.getMultiLineText(self, "Import Private Key", "base64url private key:")
                 if not confirmed or not value.strip():
                     return
                 identity = identity_from_private_key(private_key_from_base64url(value.strip()))
-            label, confirmed = QInputDialog.getText(self, "身份备注", "身份备注名:", text="导入身份")
+            label, confirmed = QInputDialog.getText(self, "Identity alias", "Identity alias:", text="Import Identity")
             if not confirmed:
-                label = "导入身份"
+                label = "Import Identity"
             self.database.upsert_identity(
                 public_id=identity.public_id,
                 public_base58=identity.public_base58,
                 private_key_b64=identity.private_key_b64,
                 fingerprint=identity.fingerprint,
-                label=label.strip() or "导入身份",
+                label=label.strip() or "Import Identity",
             )
             self.reload_identities()
             self._select_identity(identity.public_id)
         except Exception as exception:
-            self.show_error(f"导入失败: {exception}")
+            self.show_error(f"Import failed: {exception}")
 
     def _select_identity(self, public_id: str) -> None:
         for index in range(self.identity_combo.count()):
@@ -3834,19 +3834,19 @@ class MainWindow(QMainWindow):
 
     def delete_current_identity(self) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先选择一个身份。")
+            self.show_error("Select an identity first.")
             return
         identity_record = self.database.get_identity(self.current_identity_public_id)
         if identity_record is None:
             return
         message = (
-            f"确定删除本地身份『{identity_record.label}』吗？\n\n"
-            "这会删除这个身份在本机的联系人、会话、本地消息、附件索引和同步状态。"
-            "服务器上的加密消息不会被删除，已经下载到磁盘的文件也不会被物理删除。"
+            f"Delete local identity ‘{identity_record.label}’?\n\n"
+            "This will delete this identity's contacts, conversations, local messages, attachment indexes, and sync state on this device."
+            "Encrypted messages on the server will not be deleted, and files already downloaded to disk will not be physically removed."
         )
         answer = QMessageBox.question(
             self,
-            "删除身份",
+            "Delete Identity",
             message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -3855,7 +3855,7 @@ class MainWindow(QMainWindow):
             return
         deleted_public_id = self.current_identity_public_id
         if self.relay.is_connected:
-            self.run_async(self.relay.disconnect(), "断开连接失败")
+            self.run_async(self.relay.disconnect(), "Disconnect failed")
         self.database.delete_identity(deleted_public_id)
         self.current_identity_public_id = None
         self.current_peer_public_id = None
@@ -3863,26 +3863,26 @@ class MainWindow(QMainWindow):
         self.relay.set_selected_peer(None)
         self.message_model.set_conversation(None, None)
         self.reload_identities()
-        self.statusBar().showMessage("已删除本地身份。")
+        self.statusBar().showMessage("Local identity deleted.")
 
 
     def export_identity(self) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先创建或选择身份。")
+            self.show_error("Create or select an identity first.")
             return
         record = self.database.get_identity(self.current_identity_public_id)
         if record is None:
             return
         identity = identity_from_private_key(private_key_from_base64url(record.private_key_b64))
         suggested = f"identity_{record.public_base58[:12]}.json"
-        path, _ = QFileDialog.getSaveFileName(self, "导出 identity.json", suggested, "JSON (*.json);;All files (*)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export identity.json", suggested, "JSON (*.json);;All files (*)")
         if not path:
             return
         try:
             save_identity_json(Path(path), identity)
-            QMessageBox.information(self, "导出完成", "身份已导出。这个文件包含私钥，请妥善保存，不要发送给别人。")
+            QMessageBox.information(self, "Export Complete", "Identity exported. This file contains the private key; store it safely and do not send it to anyone.")
         except Exception as exception:
-            self.show_error(f"导出失败: {exception}")
+            self.show_error(f"Export failed: {exception}")
 
     def current_identity_public_base58(self) -> str | None:
         if not self.current_identity_public_id:
@@ -3895,31 +3895,31 @@ class MainWindow(QMainWindow):
     def copy_identity_public_key(self) -> None:
         public_key = self.current_identity_public_base58()
         if not public_key:
-            self.show_error("请先创建或选择身份。")
+            self.show_error("Create or select an identity first.")
             return
-        # 关键：复制内部完整 public_base58，而不是复制 QLabel 上的截断显示文本。
+        # Important: copy the internal full public_base58, not the truncated display text from the QLabel.
         self.copy_text(public_key)
-        self.statusBar().showMessage(f"已复制完整公钥：{public_key}")
+        self.statusBar().showMessage(f"Full public key copied: {public_key}")
 
     @staticmethod
     def copy_text(text: str) -> None:
         clipboard = QApplication.clipboard()
-        # 明确写入系统剪贴板；不要从任何 QLabel 的显示文本取值。
+        # Explicitly write to the system clipboard; do not read any displayed QLabel text.
         clipboard.setText(text, QClipboard.Mode.Clipboard)
-        # Linux/X11 下顺手写入 Selection，方便中键粘贴；Windows/macOS 会自动跳过。
+        # Linux/X11 also write to Selection for middle-click paste; Windows/macOS skip this automatically.
         if clipboard.supportsSelection():
             clipboard.setText(text, QClipboard.Mode.Selection)
 
     def add_contact(self) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先创建或选择身份。")
+            self.show_error("Create or select an identity first.")
             return
         dialog = AddContactDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         result = dialog.result_value()
         if result is None:
-            self.show_error("联系人公钥格式无效。")
+            self.show_error("Invalid contact public key format.")
             return
         self.database.upsert_contact(
             identity_public_id=self.current_identity_public_id,
@@ -3934,13 +3934,13 @@ class MainWindow(QMainWindow):
         index = self.conversation_model.index_for_peer(result.peer_public_id)
         if index.isValid():
             self.conversation_list.setCurrentIndex(index)
-        # 新添加或重新添加联系人时，从头同步这个会话。
-        # 这样本机删除好友后再添加，可以把服务器上仍然存在的历史加密消息重新拉回来。
+        # When a contact is newly added or re-added, sync this conversation from the beginning.
+        # This lets historical encrypted messages still present on the server be fetched again after a local contact deletion and re-add.
         self.sync_peer_conversation(result.peer_public_id, from_beginning=True)
 
     def show_contact_details(self) -> None:
         if not self.current_identity_public_id or not self.current_peer_public_id:
-            self.show_error("请先选择一个会话。")
+            self.show_error("Select a conversation first.")
             return
         contact = self.database.get_contact(self.current_identity_public_id, self.current_peer_public_id)
         peer_base58 = public_id_to_base58(self.current_peer_public_id)
@@ -4022,36 +4022,36 @@ class MainWindow(QMainWindow):
 
     def connect_or_disconnect(self) -> None:
         if self.connect_button.property("connectionState") == "connecting":
-            self.statusBar().showMessage("正在连接服务器，请稍候…")
+            self.statusBar().showMessage("Connecting to the server, please wait…")
             return
         if self.relay.is_connected:
-            self.run_async(self.relay.disconnect(), "断开失败")
+            self.run_async(self.relay.disconnect(), "Disconnect failed")
             self._set_connection_button_state("disconnected")
             return
         if not self.current_identity_public_id:
-            self.show_error("请先创建或选择身份。")
+            self.show_error("Create or select an identity first.")
             return
         try:
             host, port, proxy_config = self._connection_parameters()
             after_server_id = self.database.get_last_global_server_id(self.current_identity_public_id)
             self._set_connection_button_state("connecting")
-            self.statusBar().showMessage("正在连接服务器；连接后会自动同步全部消息…")
+            self.statusBar().showMessage("Connecting to the server; all messages will sync automatically after connection…")
             self.run_async(
                 self._connect_and_sync_all(host, port, proxy_config, after_server_id, silent=True),
-                "连接或同步失败",
+                "Connection or sync failed",
             )
         except Exception as exception:
             self._set_connection_button_state("failed")
-            self.show_error(f"连接失败: {exception}")
+            self.show_error(f"Connection failed: {exception}")
 
     def sync_current(self) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先创建或选择身份。")
+            self.show_error("Create or select an identity first.")
             return
         try:
             host, port, proxy_config = self._connection_parameters()
         except Exception as exception:
-            self.show_error(f"连接配置无效: {exception}")
+            self.show_error(f"Invalid connection configuration: {exception}")
             return
         if self.current_peer_public_id:
             peer_public_id = self.current_peer_public_id
@@ -4059,7 +4059,7 @@ class MainWindow(QMainWindow):
                 self.current_identity_public_id,
                 peer_public_id,
             )
-            self.statusBar().showMessage("正在同步当前联系人消息…")
+            self.statusBar().showMessage("Syncing messages for the current contact…")
             self.run_async(
                 self._connect_and_sync_conversation(
                     host,
@@ -4068,14 +4068,14 @@ class MainWindow(QMainWindow):
                     peer_public_id,
                     after_server_id,
                 ),
-                "同步消息失败",
+                "Message sync failed",
             )
         else:
             after_server_id = self.database.get_last_global_server_id(self.current_identity_public_id)
-            self.statusBar().showMessage("正在同步全部消息…")
+            self.statusBar().showMessage("Syncing all messages…")
             self.run_async(
                 self._connect_and_sync_all(host, port, proxy_config, after_server_id),
-                "同步消息失败",
+                "Message sync failed",
             )
 
     def sync_peer_conversation(
@@ -4086,14 +4086,14 @@ class MainWindow(QMainWindow):
         silent: bool = False,
     ) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先创建或选择身份。")
+            self.show_error("Create or select an identity first.")
             return
         if not peer_public_id:
             return
         try:
             host, port, proxy_config = self._connection_parameters()
         except Exception as exception:
-            self.show_error(f"连接配置无效: {exception}")
+            self.show_error(f"Invalid connection configuration: {exception}")
             return
         after_server_id = 0
         if from_beginning:
@@ -4107,9 +4107,9 @@ class MainWindow(QMainWindow):
             )
         if not silent:
             if self.relay.is_connected:
-                self.statusBar().showMessage("正在同步消息…")
+                self.statusBar().showMessage("Syncing messages…")
             else:
-                self.statusBar().showMessage("正在连接服务器并同步消息…")
+                self.statusBar().showMessage("Connecting to the server and syncing messages…")
         self.run_async(
             self._connect_and_sync_conversation(
                 host,
@@ -4119,7 +4119,7 @@ class MainWindow(QMainWindow):
                 after_server_id,
                 silent=silent,
             ),
-            "同步消息失败",
+            "Message sync failed",
         )
 
     def refresh_conversations(self) -> None:
@@ -4165,14 +4165,14 @@ class MainWindow(QMainWindow):
 
     def _update_peer_header(self, peer_public_id: str | None) -> None:
         if not peer_public_id or not self.current_identity_public_id:
-            self.peer_title.setText("请选择一个会话")
-            self.peer_subtitle.setText("启动后会先显示本地缓存；连接服务器后自动增量同步。")
+            self.peer_title.setText("Select a conversation")
+            self.peer_subtitle.setText("Local cache is shown at startup; after connecting to the server, incremental sync runs automatically.")
             return
         contact = self.database.get_contact(self.current_identity_public_id, peer_public_id)
         base58 = public_id_to_base58(peer_public_id)
         title = contact.alias if contact and contact.alias else base58[:18] + "…"
         self.peer_title.setText(title)
-        self.peer_subtitle.setText(f"公钥：{base58}")
+        self.peer_subtitle.setText(f"Public key: {base58}")
 
     def on_messages_changed(self, peer_public_id: str) -> None:
         if peer_public_id == self.current_peer_public_id:
@@ -4184,26 +4184,26 @@ class MainWindow(QMainWindow):
 
     def send_message(self) -> None:
         if not self.current_peer_public_id:
-            self.show_error("请先选择一个联系人。")
+            self.show_error("Select a contact first.")
             return
         text = self.input_edit.toPlainText().strip()
         if not text:
             return
         self.input_edit.clear()
-        self.run_async(self.relay.send_chat_message(self.current_peer_public_id, text), "发送失败")
+        self.run_async(self.relay.send_chat_message(self.current_peer_public_id, text), "Send failed")
 
     def choose_files(self) -> None:
-        files, _ = QFileDialog.getOpenFileNames(self, "选择要发送的文件")
+        files, _ = QFileDialog.getOpenFileNames(self, "Select files to send")
         self.send_file_paths(files)
 
     def send_file_paths(self, files: list[str]) -> None:
         if not self.current_peer_public_id:
-            self.show_error("请先选择一个联系人。")
+            self.show_error("Select a contact first.")
             return
         for file_name in files:
             path = Path(file_name)
             if path.is_file():
-                self.run_async(self.relay.send_file(self.current_peer_public_id, path), "文件发送失败")
+                self.run_async(self.relay.send_file(self.current_peer_public_id, path), "File send failed")
 
     def open_message_attachment(self, index: QModelIndex) -> None:
         message: MessageRecord | None = index.data(MessageRecordRole)
@@ -4212,13 +4212,13 @@ class MainWindow(QMainWindow):
         file_id, _ = parse_file_token(message.text)
         attachment = self.database.get_attachment(message.peer_public_id, file_id)
         if not attachment or not attachment.local_path:
-            self.statusBar().showMessage("这个文件还没有本地路径")
+            self.statusBar().showMessage("This file does not have a local path yet")
             return
         path = Path(attachment.local_path)
         if path.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         else:
-            self.statusBar().showMessage("本地文件不存在")
+            self.statusBar().showMessage("Local file does not exist")
 
     def show_conversation_context_menu(self, position) -> None:  # noqa: ANN001
         index = self.conversation_list.indexAt(position)
@@ -4228,11 +4228,11 @@ class MainWindow(QMainWindow):
         if conversation_record is None or not self.current_identity_public_id:
             return
         menu = QMenu(self)
-        detail_action = QAction("联系人详情", self)
-        sync_action = QAction("同步消息", self)
-        export_action = QAction("导出聊天记录", self)
-        copy_key_action = QAction("复制对方公钥", self)
-        delete_action = QAction("删除好友", self)
+        detail_action = QAction("Contact Details", self)
+        sync_action = QAction("Sync Messages", self)
+        export_action = QAction("Export Chat History", self)
+        copy_key_action = QAction("Copy Peer Public Key", self)
+        delete_action = QAction("Delete Contact", self)
         menu.addAction(detail_action)
         menu.addAction(sync_action)
         menu.addAction(export_action)
@@ -4251,31 +4251,31 @@ class MainWindow(QMainWindow):
             self.export_chat_history(conversation_record)
         elif chosen_action == copy_key_action:
             self.copy_text(conversation_record.peer_base58)
-            self.statusBar().showMessage(f"已复制对方公钥：{conversation_record.peer_base58}")
+            self.statusBar().showMessage(f"Peer public key copied: {conversation_record.peer_base58}")
         elif chosen_action == delete_action:
             self.delete_contact(conversation_record)
 
     def export_chat_history(self, conversation_record: ConversationRecord) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先选择一个身份。")
+            self.show_error("Select an identity first.")
             return
         messages = self.database.list_messages_for_export(
             self.current_identity_public_id,
             conversation_record.peer_public_id,
         )
         if not messages:
-            QMessageBox.information(self, "导出聊天记录", "这个联系人当前没有本地聊天记录可导出。")
+            QMessageBox.information(self, "Export Chat History", "This contact currently has no local chat history to export.")
             return
 
         contact = self.database.get_contact(self.current_identity_public_id, conversation_record.peer_public_id)
         identity = self.database.get_identity(self.current_identity_public_id)
         display_name = conversation_record.display_name or (contact.alias if contact and contact.alias else conversation_record.peer_base58)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        suggested_name = safe_filename(f"聊天记录_{display_name}_{timestamp}.txt")
+        suggested_name = safe_filename(f"chat_history_{display_name}_{timestamp}.txt")
         default_path = str(Path.home() / suggested_name)
         file_name, _ = QFileDialog.getSaveFileName(
             self,
-            "导出聊天记录",
+            "Export Chat History",
             default_path,
             "Text Files (*.txt);;All Files (*)",
         )
@@ -4294,11 +4294,11 @@ class MainWindow(QMainWindow):
             )
             output_path.write_text(export_text, encoding="utf-8", newline="\n")
         except Exception as exception:
-            self.show_error(f"导出聊天记录失败: {exception}")
+            self.show_error(f"Failed to export chat history: {exception}")
             return
 
-        self.statusBar().showMessage(f"已导出聊天记录：{output_path}")
-        QMessageBox.information(self, "导出聊天记录", f"已导出 {len(messages)} 条本地聊天记录：\n{output_path}")
+        self.statusBar().showMessage(f"Chat history exported: {output_path}")
+        QMessageBox.information(self, "Export Chat History", f"Exported {len(messages)} local chat messages:\n\n{output_path}")
 
     def _build_chat_export_text(
         self,
@@ -4311,31 +4311,31 @@ class MainWindow(QMainWindow):
         peer_label = conversation_record.display_name or (contact.alias if contact and contact.alias else conversation_record.peer_base58)
         peer_base58 = conversation_record.peer_base58
         peer_fingerprint = conversation_record.fingerprint or (contact.fingerprint if contact else "")
-        identity_label = identity.label if identity else "当前身份"
+        identity_label = identity.label if identity else "Current Identity"
         identity_base58 = identity.public_base58 if identity else public_id_to_base58(self.current_identity_public_id or "")
         identity_fingerprint = identity.fingerprint if identity else fingerprint_for_public_id(self.current_identity_public_id or "")
 
         lines: list[str] = [
-            "x25519 Relay 聊天记录导出",
+            "x25519 Relay Chat History Export",
             "=" * 34,
-            f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"消息数量：{len(messages)}",
+            f"Export time：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Message count：{len(messages)}",
             "",
-            "本地身份",
-            f"  名称：{identity_label}",
-            f"  公钥 Base58：{identity_base58}",
-            f"  指纹：{identity_fingerprint}",
+            "Local Identity",
+            f"  Name：{identity_label}",
+            f"  Public Key Base58：{identity_base58}",
+            f"  Fingerprint：{identity_fingerprint}",
             "",
-            "联系人",
-            f"  名称：{peer_label}",
-            f"  公钥 Base58：{peer_base58}",
-            f"  指纹：{peer_fingerprint}",
+            "Contact",
+            f"  Name：{peer_label}",
+            f"  Public Key Base58：{peer_base58}",
+            f"  Fingerprint：{peer_fingerprint}",
             "",
-            "说明",
-            "  这个文件只导出本地已保存的聊天记录。",
-            "  附件二进制内容不会导出；文件消息只写入文件名、大小、SHA-256、状态等索引信息。",
+            "Notes",
+            "  This file only exports locally saved chat history.",
+            "  Attachment binary contents are not exported; file messages only include index metadata such as filename, size, SHA-256, and status.",
             "",
-            "聊天记录",
+            "Chat History",
             "-" * 34,
         ]
 
@@ -4346,10 +4346,10 @@ class MainWindow(QMainWindow):
 
     def _format_export_message(self, message: MessageRecord) -> list[str]:
         timestamp = full_date_time(message.created_at_ms)
-        speaker = "我" if message.direction == "outgoing" else "对方" if message.direction == "incoming" else message.direction
-        status_suffix = "" if message.status in {"synced", "sent", "delivered", "saved"} else f" · 状态：{message.status}"
+        speaker = "Me" if message.direction == "outgoing" else "Peer" if message.direction == "incoming" else message.direction
+        status_suffix = "" if message.status in {"synced", "sent", "delivered", "saved"} else f" · Status：{message.status}"
         if message.error:
-            status_suffix += f" · 错误：{message.error}"
+            status_suffix += f" · Error：{message.error}"
 
         if message.kind == "file_start":
             file_id, fallback_name = parse_file_token(message.text)
@@ -4357,21 +4357,21 @@ class MainWindow(QMainWindow):
             filename = attachment.filename if attachment else fallback_name
             file_status = attachment.status if attachment else message.status
             result = [
-                f"[{timestamp}] {speaker} 发送文件{status_suffix}",
-                f"    文件名：{filename}",
+                f"[{timestamp}] {speaker} sent a file{status_suffix}",
+                f"    Filename：{filename}",
             ]
             if file_id:
-                result.append(f"    文件 ID：{file_id}")
+                result.append(f"    File ID：{file_id}")
             if attachment:
                 result.extend([
-                    f"    大小：{human_file_size(attachment.size)} ({attachment.size} bytes)",
-                    f"    SHA-256：{attachment.sha256 or '未知'}",
-                    f"    分块：{attachment.completed_chunks}/{attachment.total_chunks}",
-                    f"    文件状态：{file_status}",
+                    f"    Size：{human_file_size(attachment.size)} ({attachment.size} bytes)",
+                    f"    SHA-256：{attachment.sha256 or 'Unknown'}",
+                    f"    Chunks：{attachment.completed_chunks}/{attachment.total_chunks}",
+                    f"    File status：{file_status}",
                 ])
             else:
-                result.append(f"    文件状态：{file_status}")
-            result.append("    附件内容：未导出")
+                result.append(f"    File status：{file_status}")
+            result.append("    Attachment contents：not exported")
             return result
 
         text = message.text or ""
@@ -4381,16 +4381,16 @@ class MainWindow(QMainWindow):
 
     def delete_contact(self, conversation_record: ConversationRecord) -> None:
         if not self.current_identity_public_id:
-            self.show_error("请先选择一个身份。")
+            self.show_error("Select an identity first.")
             return
         display_name = conversation_record.display_name or conversation_record.peer_base58
         message = (
-            f"确定从当前身份删除好友『{display_name}』吗？\n\n"
-            "这只删除本机数据：联系人、会话、本地消息和附件索引。服务器上的加密消息不会被删除。"
+            f"Delete contact ‘{display_name}’?\n\n"
+            "This only deletes local data: contacts, conversations, local messages, and attachment indexes. Encrypted messages on the server will not be deleted."
         )
         answer = QMessageBox.question(
             self,
-            "删除好友",
+            "Delete Contact",
             message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -4409,7 +4409,7 @@ class MainWindow(QMainWindow):
             self.message_model.set_conversation(self.current_identity_public_id, None)
             self._update_peer_header(None)
         self.refresh_conversations()
-        self.statusBar().showMessage("已删除本地好友。")
+        self.statusBar().showMessage("Local contact deleted.")
 
     def show_message_context_menu(self, position) -> None:  # noqa: ANN001
         index = self.message_list.indexAt(position)
@@ -4419,14 +4419,14 @@ class MainWindow(QMainWindow):
         if not message:
             return
         menu = QMenu(self)
-        copy_action = QAction("复制文本", self)
+        copy_action = QAction("Copy Text", self)
         copy_action.triggered.connect(lambda: self.copy_text(_copyable_text(message)))
         menu.addAction(copy_action)
         if message.kind == "file_start":
-            open_action = QAction("打开文件", self)
+            open_action = QAction("Open File", self)
             open_action.triggered.connect(lambda: self.open_message_attachment(index))
             menu.addAction(open_action)
-            folder_action = QAction("打开所在目录", self)
+            folder_action = QAction("Open Containing Folder", self)
             folder_action.triggered.connect(lambda: self.open_attachment_folder(message))
             menu.addAction(folder_action)
         menu.exec(self.message_list.viewport().mapToGlobal(position))
@@ -4447,19 +4447,19 @@ class MainWindow(QMainWindow):
         status = str(progress.get("status", ""))
         if total > 0:
             percent = int(done * 100 / total)
-            self.statusBar().showMessage(f"文件 {filename}: {percent}% · {status}")
+            self.statusBar().showMessage(f"File {filename}: {percent}% · {status}")
         else:
-            self.statusBar().showMessage(f"文件 {filename}: {status}")
+            self.statusBar().showMessage(f"File {filename}: {status}")
         if self.current_peer_public_id:
             self.message_model.reload()
 
     def _set_connection_button_state(self, state: str) -> None:
         state_text = {
-            "connected": "已连接",
-            "connecting": "连接中",
-            "failed": "未连接",
-            "disconnected": "未连接",
-        }.get(state, "未连接")
+            "connected": "Connected",
+            "connecting": "Connecting",
+            "failed": "Disconnected",
+            "disconnected": "Disconnected",
+        }.get(state, "Disconnected")
         self.connect_button.setText(state_text)
         self.connect_button.setProperty("connectionState", state)
         self.connect_button.style().unpolish(self.connect_button)
@@ -4468,23 +4468,23 @@ class MainWindow(QMainWindow):
 
     def on_connection_state_changed(self, message: str) -> None:
         self.statusBar().showMessage(message)
-        if message in {"未连接", "已断开"}:
+        if message in {"Disconnected", "Disconnected"}:
             self._set_connection_button_state("disconnected")
-        elif message == "连接失败":
+        elif message == "Connection failed":
             self._set_connection_button_state("failed")
-        elif message == "连接中":
+        elif message == "Connecting":
             self._set_connection_button_state("connecting")
-        elif message == "已连接":
+        elif message == "Connected":
             self._set_connection_button_state("connected")
 
     def on_sync_state_changed(self, message: str) -> None:
         self.statusBar().showMessage(message)
 
     def show_error(self, message: str) -> None:
-        QMessageBox.warning(self, "错误", message)
+        QMessageBox.warning(self, "Error", message)
 
 
-    def run_async(self, coroutine: Any, error_prefix: str = "任务失败") -> None:
+    def run_async(self, coroutine: Any, error_prefix: str = "Task failed") -> None:
         self.async_runner.submit(coroutine, error_prefix)
 
 
@@ -4519,7 +4519,7 @@ class AsyncRunner(QObject):
             self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         self.loop.close()
 
-    def submit(self, coroutine: Any, error_prefix: str = "任务失败") -> Future:
+    def submit(self, coroutine: Any, error_prefix: str = "Task failed") -> Future:
         if self.loop is None:
             raise RuntimeError("asyncio loop is not ready")
         future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
@@ -4574,7 +4574,7 @@ def main() -> None:
 
     def shutdown() -> None:
         try:
-            runner.submit(relay_client.disconnect(), "关闭连接失败").result(timeout=2.0)
+            runner.submit(relay_client.disconnect(), "Failed to close connection").result(timeout=2.0)
         except Exception:
             pass
         try:
