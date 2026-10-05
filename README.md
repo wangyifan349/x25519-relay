@@ -390,7 +390,7 @@ For high-throughput deployments, replace SQLite with PostgreSQL or another datab
 If this project helps you, you can sponsor development with Bitcoin:
 
 ```text
-bc1qxqfhumpqtnxrznkx9r4xsp8m6zsedtgusjns7p
+bc1qwhzzk5tx07592vkf97rt8x8v0zdntad8lexnrgv3gdmecg8pfmhqzceedl
 ```
 
 ## 📜 License
